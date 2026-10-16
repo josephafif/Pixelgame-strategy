@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Realmwright</title>
-<meta name="description" content="Realmwright: a real-time kingdom strategy game where your towns grow on their own into pixel-art cities.">
+<meta name="description" content="Realmwright: a real-time race for land. Push your borders, build towns that grow into pixel-art cities, ally, betray and sail.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Jacquard+12&family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet">
@@ -17,35 +17,37 @@
 <body>
 <canvas id="view" aria-label="Map of the realm"></canvas>
 
-<header id="topbar" hidden>
-  <div id="realm"><span id="realm-crest"></span><span id="realm-name"></span></div>
-  <div id="resources"></div>
-  <div id="clock">
-    <span id="time"></span>
-    <span id="speed" hidden>
-      <button data-speed="0" title="Pause (Space)">II</button>
-      <button data-speed="1" title="Normal speed (1)">1×</button>
-      <button data-speed="2" title="Fast (2)">2×</button>
-      <button data-speed="4" title="Fastest (3)">4×</button>
-    </span>
-    <button id="btn-menu" title="Menu (Esc)">☰</button>
+<div id="hud" hidden>
+  <div id="hud-top">
+    <div id="stats" class="chip" hidden>
+      <span class="stat" title="Your share of all land"><img id="i-land" alt=""><b id="st-land"></b></span>
+      <span class="stat pop" title="People (the bar shows how close you are to your limit)"><img id="i-pop" alt=""><b id="st-pop"></b></span>
+      <span class="stat" title="Troops"><img id="i-troops" alt=""><b id="st-troops"></b></span>
+      <span class="stat" title="Gold"><img id="i-gold" alt=""><b id="st-gold"></b></span>
+    </div>
+    <div id="top-right">
+      <span id="time" class="chip"></span>
+      <button id="btn-speed" class="chip" title="Game speed (Space pauses)" hidden>1×</button>
+      <button id="btn-home" class="chip" title="Back to your land (H)">⌂</button>
+      <button id="btn-board" class="chip" title="Leaderboard">≡</button>
+      <button id="btn-menu" class="chip" title="Menu (Esc)">☰</button>
+    </div>
   </div>
-</header>
-
-<aside id="left" class="panel" hidden></aside>
-<aside id="right" class="panel" hidden>
-  <div class="sheet-head" data-grip><span class="grip" aria-hidden="true"></span><h2 id="right-title">Realm</h2><button class="close" data-sheet-close title="Close">✕</button></div>
-  <nav id="tabs">
-    <button data-tab="realm" class="on">Realm</button>
-    <button data-tab="trade">Trade</button>
-    <button data-tab="diplomacy">Diplomacy</button>
-    <button data-tab="chronicle">Chronicle</button>
-  </nav>
-  <div id="tab-body"></div>
-</aside>
-
-<nav id="dock" hidden aria-label="Realm"></nav>
-<div id="minimap-wrap" hidden><canvas id="minimap" width="240" height="160"></canvas></div>
+  <div id="board" hidden></div>
+  <div id="notices" aria-live="polite"></div>
+  <div id="hud-bottom">
+    <div id="attacks"></div>
+    <div id="bar" hidden>
+      <div class="sliders">
+        <label class="slider" title="Share of your troops each attack sends (Q/E)"><span>Attack <b id="v-ratio"></b></span><input type="range" id="r-ratio" min="5" max="100" step="5"></label>
+        <label class="slider" title="Share of your people under arms. Workers earn gold."><span>Troops <b id="v-share"></b></span><input type="range" id="r-share" min="5" max="95" step="5"></label>
+      </div>
+      <div id="build"></div>
+    </div>
+  </div>
+</div>
+<div id="popup" hidden></div>
+<div id="minimap-wrap" hidden><canvas id="minimap" width="240" height="168"></canvas></div>
 <div id="hint" hidden></div>
 <div id="placement" hidden></div>
 <div id="toasts" aria-live="polite"></div>

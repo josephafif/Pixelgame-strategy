@@ -66,7 +66,7 @@ function writeSave(data, info) {
 
 function describeInfo(i) {
   if (!i) return '';
-  return `${esc(i.name)} · ${i.minutes} min · ${i.settlements} town${i.settlements === 1 ? '' : 's'} · ${esc(i.size)} map`;
+  return `${esc(i.name)} · ${i.minutes} min · ${i.alive === false ? 'fallen' : `${i.share ?? 0}% of the land`} · ${esc(i.size)} map`;
 }
 
 async function saveSession(quiet = false) {
@@ -134,7 +134,7 @@ function titleMenu(err = '') {
   const info = savedInfo();
   const live = session?.single && session.cw;
   showModal(`<h1>Realmwright</h1>
-    <div class="tagline">Found a capital. Grow towns that build themselves.<br>Trade, scheme and wage war for the realm.</div>
+    <div class="tagline">A race for land. Push your borders, raise towns that grow on their own,<br>ally, betray and sail. First to 80% of the map wins.</div>
     ${err ? `<p class="bad" style="text-align:center">${esc(err)}</p>` : ''}
     <div class="menu">
       ${session ? '<button class="btn go" data-go="resume">Return to the realm</button>' : ''}
@@ -145,34 +145,43 @@ function titleMenu(err = '') {
       <button class="btn" data-go="load-file">Load save file…</button>
       <button class="btn" data-go="help">How to play</button>
     </div>
-    <p class="small muted" style="text-align:center;margin-top:18px">A real-time kingdom strategy game · pixel art in the spirit of Pixelgame</p>`);
+    <p class="small muted" style="text-align:center;margin-top:18px">A real-time strategy game · pixel art in the spirit of Pixelgame</p>`);
 }
 
+const DEFAULT_AIS = { small: 6, medium: 10, large: 16 };
+
 function singleSetup() {
-  const o = store.get('single', { name: 'House Ardent', size: 'medium', ais: 3, timeLimit: 45 });
+  const o = store.get('single2', { name: 'House Ardent', size: 'medium', ais: 10, timeLimit: 20 });
+  const aiOptions = (n) => [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24].map((k) => `<option ${k === n ? 'selected' : ''}>${k}</option>`).join('');
   showModal(`<h2>A new realm</h2>
-    <label>Your house <input id="f-name" value="${esc(o.name)}" maxlength="20"></label>
+    <label>Your realm <input id="f-name" value="${esc(o.name)}" maxlength="20"></label>
     <label>World seed <input id="f-seed" type="number" value="${Math.floor(Math.random() * 99999) + 1}"></label>
     <label>Map size <select id="f-size">${['small', 'medium', 'large'].map((s) => `<option ${s === o.size ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
-    <label>AI rivals <select id="f-ais">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<option ${n === o.ais ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-    <label>Time limit (min) <input id="f-time" type="number" value="${o.timeLimit}" min="10" max="180"></label>
-    <p class="small muted">Rivals are builders, merchants and warlords. They follow exactly the same rules as you.</p>
+    <label>AI rivals <select id="f-ais">${aiOptions(o.ais)}</select></label>
+    <label>Time limit (min) <input id="f-time" type="number" value="${o.timeLimit}" min="5" max="60"></label>
+    <p class="small muted">Rivals are builders, merchants and warlords and follow the same rules as you. A match takes 10 to 20 minutes; when time runs out, the realm with the most land wins.</p>
     <div class="footer"><button class="btn" data-go="title">Back</button><button class="btn primary" data-go="start-single">Begin</button></div>`);
+  // A bigger map suggests more rivals, until the player picks a number.
+  const size = document.getElementById('f-size');
+  const ais = document.getElementById('f-ais');
+  size.addEventListener('change', () => {
+    if (!ais.dataset.touched) ais.innerHTML = aiOptions(DEFAULT_AIS[size.value]);
+  });
+  ais.addEventListener('change', () => {
+    ais.dataset.touched = '1';
+  });
 }
 
 function helpScreen() {
   showModal(`<h2>How to play</h2><div class="help small">
-    <p><b>Found your capital.</b> Pick a site: fertile plains, forests, hills with iron, coasts and river crossings all favour different strategies.</p>
-    <p><b>Your towns build themselves.</b> Houses go up as people need them, and streets, districts, markets and walls grow from your decisions. You order workplaces and upgrades; the town planner lays them out.</p>
-    <p><b>Four resources and gold.</b> Food feeds everyone, wood builds, stone raises bigger towns and walls, iron arms infantry and makes cities. Gold comes from taxes and trade, and pays your soldiers.</p>
-    <p><b>People are your workforce.</b> Every soldier is a worker taken from the fields. Soldiers need barracks and time to train: infantry costs iron, archers cost wood, and all of them eat food and draw gold. Militia can be levied in an emergency, but they are weak and the economy suffers.</p>
-    <p><b>Grow</b> settlements from outpost to hamlet, village, town and city. Each stage needs people, materials and certain buildings, claims more land and allows more buildings.</p>
-    <p><b>Expand deliberately.</b> The whole map is open to everyone: send settlers to found outposts within reach. Connect them by road: unconnected towns lose part of what they produce on the way.</p>
-    <p><b>Trade</b> at the neutral free cities with caravans, using standing buy and sell orders, or strike agreements with other realms. Prices follow supply and demand.</p>
-    <p><b>War</b> opens borders. Armies need supply near your land; hills, forests and rivers favour defenders; walls must be battered down, ideally with siege engines, before a town can be taken.</p>
-    <p><b>Win</b> by conquest, by holding two thirds of all towns and 60% of all people for 4 minutes, by building the Grand Exchange and holding it for 3 minutes, or by score when time runs out.</p>
-    <p><b>Controls:</b> drag to pan (or WASD), wheel to zoom, click to select, right-click to march an army, H for your capital, Space to pause, 1/2/3 for speed, Esc to cancel.</p>
-    <p><b>On a phone or tablet:</b> drag to pan, pinch or double-tap to zoom, tap to select. Long-press the map to march a selected army. Map orders (settlers, roads, marches) show the spot first and wait for you to confirm. The bar at the bottom opens your town, realm, trade, diplomacy and chronicle.</p>
+    <p><b>Pick where to start.</b> Tap open land. You begin with a patch of land and a hamlet.</p>
+    <p><b>Your people grow with your land.</b> The more land and the bigger your towns, the more people you can have. The <b>Troops</b> slider sets how many of them are under arms; the rest work and earn gold.</p>
+    <p><b>Tap land to attack it.</b> Unclaimed land is cheap; a rival's land costs more, and more again in hills, forests and mountains or near an outpost. The <b>Attack</b> slider sets the share of your troops each attack sends. Your border pushes outward until the troops are spent; what is left comes home. ✕ calls an attack off.</p>
+    <p><b>Across the water,</b> a tap on a far shore sends a boat (up to three at a time). The troops land and attack from the beach.</p>
+    <p><b>Build</b> with gold: <b>towns</b> (more people and gold; they grow by themselves into pixel-art cities, and you can raise them to village, town and city), <b>ports</b> (trade ships sail to other players' ports and both sides earn gold) and <b>outposts</b> (land around them is much harder to take).</p>
+    <p><b>Alliances.</b> Long-press (or right-click) a realm to ask for an alliance. Allies cannot attack each other and trade for more. An alliance lasts five minutes and can be renewed; whoever breaks one is a traitor for a minute and easier to attack.</p>
+    <p><b>Win</b> by holding 80% of all land, by being the last realm standing, or by holding the most land when time runs out.</p>
+    <p><b>Controls:</b> drag to pan, wheel or pinch to zoom, click or tap to attack, right-click or long-press for more. Keys: H home, B/P/O build town/port/outpost, Q/E attack share, +/- zoom, Space pause, 1/2/3 speed, Esc menu.</p>
     </div><div class="footer"><span></span><button class="btn" data-go="title">Back</button></div>`);
 }
 
@@ -185,7 +194,7 @@ function multiSetup(err = '') {
   showModal(`<h2>Multiplayer</h2>
     ${err ? `<p class="bad">${esc(err)}</p>` : ''}
     ${STATIC_HOSTING ? '<p class="small">This copy of the game is hosted without a game server, so single player works here but multiplayer needs a server: run <code>npm start</code> somewhere reachable and enter its address (<code>wss://…/ws</code> from an https page).</p>' : ''}
-    <label>Your house <input id="f-name" value="${esc(o.name)}" maxlength="20"></label>
+    <label>Your realm <input id="f-name" value="${esc(o.name)}" maxlength="20"></label>
     <label>Server <input id="f-server" value="${esc(o.server || def)}" placeholder="wss://your-server/ws"></label>
     <label>Room code <input id="f-code" placeholder="e.g. K7Q2M" maxlength="5" style="text-transform:uppercase"></label>
     <p class="small muted">Run your own server with <code>npm start</code> and share its address. The server runs the authoritative simulation.</p>
@@ -201,9 +210,9 @@ function lobbyScreen(room, me, isHost) {
     <h3 class="small">Settings</h3>
     <label>World seed <input id="o-seed" type="number" value="${o.seed}" ${isHost ? '' : 'disabled'}></label>
     <label>Map size <select id="o-size" ${isHost ? '' : 'disabled'}>${['small', 'medium', 'large'].map((s) => `<option ${s === o.size ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
-    <label>AI rivals <input id="o-ais" type="number" min="0" max="7" value="${o.ais}" ${isHost ? '' : 'disabled'}></label>
-    <label>Placement time (s) <input id="o-place" type="number" min="10" max="120" value="${o.placementTime}" ${isHost ? '' : 'disabled'}></label>
-    <label>Time limit (min) <input id="o-time" type="number" min="10" max="180" value="${o.timeLimit}" ${isHost ? '' : 'disabled'}></label>
+    <label>AI rivals <input id="o-ais" type="number" min="0" max="24" value="${o.ais}" ${isHost ? '' : 'disabled'}></label>
+    <label>Time to choose a start (s) <input id="o-place" type="number" min="10" max="120" value="${o.placementTime}" ${isHost ? '' : 'disabled'}></label>
+    <label>Time limit (min) <input id="o-time" type="number" min="5" max="60" value="${o.timeLimit}" ${isHost ? '' : 'disabled'}></label>
     <div class="footer"><button class="btn" data-go="leave">Leave</button>${isHost ? '<span><button class="btn" data-go="save-opts">Save settings</button> <button class="btn primary" data-go="start-room">Start match</button></span>' : '<span class="muted">Waiting for the host…</span>'}</div>`);
 }
 
@@ -220,7 +229,7 @@ function endSession() {
   session.ui?.destroy();
   session.renderer?.destroy();
   session.transport.close();
-  for (const id of ['topbar', 'left', 'right', 'minimap-wrap', 'hint', 'placement', 'dock']) $(id).hidden = true;
+  for (const id of ['hud', 'popup', 'minimap-wrap', 'hint', 'placement', 'tooltip']) $(id).hidden = true;
   $('toasts').innerHTML = '';
   session = null;
 }
@@ -294,7 +303,7 @@ function runGame(transport, single) {
       last = now;
       s.ui.update(dt);
       s.renderer.frame(now);
-      if (now - miniAt > 400) {
+      if (now - miniAt > 400 && !$('minimap-wrap').hidden) {
         miniAt = now;
         s.renderer.drawMinimap($('minimap'));
       }
@@ -313,9 +322,9 @@ function startSingle() {
     seed: Number($('f-seed').value) || 1,
     size: $('f-size').value,
     ais: Number($('f-ais').value),
-    timeLimit: Number($('f-time').value) || 45,
+    timeLimit: Number($('f-time').value) || 20,
   };
-  store.set('single', { name: o.name, size: o.size, ais: o.ais, timeLimit: o.timeLimit });
+  store.set('single2', { name: o.name, size: o.size, ais: o.ais, timeLimit: o.timeLimit });
   endSession();
   loading('Raising the realm…');
   runGame(new WorkerTransport(o), true);
@@ -397,7 +406,7 @@ modal.addEventListener('click', (e) => {
 const q = new URLSearchParams(location.search);
 if (q.get('autostart')) {
   loading('Raising the realm…');
-  runGame(new WorkerTransport({ name: 'Tester', seed: Number(q.get('seed') || 7), size: q.get('size') || 'small', ais: Number(q.get('ais') || 2), timeLimit: 45 }), true);
+  runGame(new WorkerTransport({ name: 'Tester', seed: Number(q.get('seed') || 7), size: q.get('size') || 'small', ais: Number(q.get('ais') || 4), timeLimit: 20 }), true);
 } else {
   titleMenu();
 }

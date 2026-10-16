@@ -1,55 +1,49 @@
-// In-game interface: resource bar, selection panel (settlement / army),
-// realm tabs (labour, trade, diplomacy, chronicle), placement, action modes
-// and input. Every action is sent as a command; the simulation validates it.
+// The in-game interface, kept small so the map stays in view: a stats chip
+// and a few buttons at the top, two sliders and three build buttons at the
+// bottom, short notices for alliance requests and attacks. Tapping land
+// attacks it (by boat when it lies across the water); a long press or a
+// right click opens a small menu for that spot. Every action is sent as a
+// command; the simulation validates it.
 
-import { BUILDINGS, STAGES, WALLS, UNITS, RESOURCES, RES_KEYS, LABOR, RULES, stagePopNeed } from '../../engine/sim/defs.js';
-import { analyzeSite, describeSite, canFoundAt } from '../../engine/world/sites.js';
-import { BIOMES } from '../../engine/world/biomes.js';
-import { STYLES } from '../../engine/settlement/styles.js';
-import { iconImg, icon } from './icons.js';
+import { STRUCTURES, MAX_TOWN_LEVEL, TOWN_LEVELS, RULES } from '../../engine/sim/defs.js';
+import { canFoundAt } from '../../engine/world/sites.js';
+import { icon } from './icons.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const fmt = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.floor(v)}`);
-const RES_ICON = { food: 'food', wood: 'wood', stone: 'stone', iron: 'iron', coin: 'coin' };
-const LABOR_NAMES = { food: 'Food', wood: 'Timber', stone: 'Stone', iron: 'Iron', build: 'Building' };
-const LEVELS = ['Off', 'Low', 'Normal', 'High'];
-const UNIT_ORDER = ['inf', 'arch', 'siege'];
-const TAB_NAMES = { realm: 'Realm', trade: 'Trade', diplomacy: 'Diplomacy', chronicle: 'Chronicle' };
-const DOCK = [['town', 'house', 'Town'], ['realm', 'crown', 'Realm'], ['trade', 'scales', 'Trade'], ['diplomacy', 'banner', 'Diplomacy'], ['chronicle', 'scroll', 'Chronicle']];
-// Phones keep the most watched stocks at the front of the scrolling strip.
-const COMPACT_ORDER = ['coin', 'food', 'wood', 'stone', 'iron', 'pop', 'soldiers'];
-const SECTION_DEFAULTS = { grow: true, construction: true, build: true, work: false, military: false, walls: false };
+export const fmt = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e4 ? `${Math.round(v / 1000)}k` : v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.floor(v)}`);
+const pct = (v) => (v >= 0.1 ? `${Math.round(v * 100)}%` : `${(v * 100).toFixed(1)}%`);
+const BUILD_ICON = { town: 'house', port: 'anchor', outpost: 'tower' };
+const TOAST_KINDS = new Set(['error', 'captured', 'lost', 'alliance', 'betrayal', 'fall', 'victory', 'declined', 'expired', 'landing', 'repelled', 'built', 'grew']);
+const PUBLIC_TOAST = new Set(['betrayal', 'fall', 'victory', 'alliance']);
 const COMPACT_QUERY = '(max-width: 720px), (max-height: 500px)';
-
-function loadSections() {
-  try {
-    return { ...SECTION_DEFAULTS, ...JSON.parse(localStorage.getItem('realmwright:sections') || '{}') };
-  } catch {
-    return { ...SECTION_DEFAULTS };
-  }
-}
-
-const TOAST_KINDS = new Set(['war', 'peace', 'capture', 'fall', 'victory', 'found', 'stage', 'built', 'error', 'warn', 'military', 'proposal', 'info']);
-
-function costHtml(cost, have = null) {
-  return Object.entries(cost)
-    .map(([r, v]) => {
-      const short = have && (r === 'coin' ? have.coin : have.stock[r] || 0) < v;
-      return `<span class="${short ? 'bad' : ''}">${iconImg(RES_ICON[r] || 'coin', r)}${v}</span>`;
-    })
-    .join(' ');
-}
-
-function canPay(me, cost, mult = 1) {
-  if (!me || !me.stock) return false;
-  return Object.entries(cost).every(([r, v]) => (r === 'coin' ? me.coin : me.stock[r] || 0) >= v * mult);
-}
 
 function clock(t) {
   const m = Math.floor(t / 60);
   const s = Math.floor(t % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
+
+function setText(el, v) {
+  if (el && el.textContent !== v) el.textContent = v;
+}
+
+const store = {
+  get(k, d) {
+    try {
+      const v = localStorage.getItem(`realmwright:${k}`);
+      return v === null ? d : JSON.parse(v);
+    } catch {
+      return d;
+    }
+  },
+  set(k, v) {
+    try {
+      localStorage.setItem(`realmwright:${k}`, JSON.stringify(v));
+    } catch {
+      // storage unavailable: fine
+    }
+  },
+};
 
 export class GameUI {
   constructor({ cw, renderer, transport, single, onQuit }) {
@@ -58,255 +52,157 @@ export class GameUI {
     this.tx = transport;
     this.single = single;
     this.onQuit = onQuit;
-    this.tab = 'realm';
     this.speed = 1;
-    this.mode = null;
-    this.lastPanel = 0;
-    this.placingSite = null;
-    this.el = {
-      top: document.getElementById('topbar'),
-      res: document.getElementById('resources'),
-      time: document.getElementById('time'),
-      speed: document.getElementById('speed'),
-      left: document.getElementById('left'),
-      right: document.getElementById('right'),
-      tabBody: document.getElementById('tab-body'),
-      tabs: document.getElementById('tabs'),
-      mini: document.getElementById('minimap'),
-      miniWrap: document.getElementById('minimap-wrap'),
-      hint: document.getElementById('hint'),
-      placement: document.getElementById('placement'),
-      toasts: document.getElementById('toasts'),
-      tip: document.getElementById('tooltip'),
-      crest: document.getElementById('realm-crest'),
-      realm: document.getElementById('realm-name'),
-      dock: document.getElementById('dock'),
-      rightTitle: document.getElementById('right-title'),
-    };
+    this.mode = null; // 'town' | 'port' | 'outpost' while placing a building
+    this.ratio = store.get('ratio', RULES.attackRatio);
     this.keys = new Set();
-    this.unsub = [];
-    // Phone layout: one sheet at a time ('select' or 'tab'), optionally full height.
-    this.mqCompact = window.matchMedia(COMPACT_QUERY);
-    this.mqTouch = window.matchMedia('(pointer: coarse)');
-    this.compact = this.mqCompact.matches;
-    this.touch = this.mqTouch.matches;
-    this.sheet = null;
-    this.full = false;
-    this.hasLeft = false;
-    this.secOpen = loadSections();
-    this.formVals = {}; // values typed into panel forms survive the twice-a-second redraws
-    this.recruitN = { inf: 5, arch: 5, cav: 5, siege: 1 };
-    this.pendingTap = null;
-  }
-
-  /** "Tap" on touch screens, "Click" with a mouse. */
-  get tapWord() {
-    return this.touch ? 'Tap' : 'Click';
+    this.listeners = [];
+    this.vel = null;
+    this.spawnPick = null;
+    this.boardOpen = false;
+    this.ended = false;
+    this.fallenShown = false;
+    const $ = (id) => document.getElementById(id);
+    this.el = {
+      hud: $('hud'),
+      stats: $('stats'),
+      land: $('st-land'),
+      pop: $('st-pop'),
+      troops: $('st-troops'),
+      gold: $('st-gold'),
+      time: $('time'),
+      speed: $('btn-speed'),
+      board: $('board'),
+      boardBtn: $('btn-board'),
+      notices: $('notices'),
+      attacks: $('attacks'),
+      bar: $('bar'),
+      ratio: $('r-ratio'),
+      ratioV: $('v-ratio'),
+      share: $('r-share'),
+      shareV: $('v-share'),
+      build: $('build'),
+      hint: $('hint'),
+      popup: $('popup'),
+      placement: $('placement'),
+      toasts: $('toasts'),
+      tip: $('tooltip'),
+      mini: $('minimap-wrap'),
+    };
   }
 
   start() {
-    const { el } = this;
-    el.top.hidden = false;
-    el.right.hidden = true;
-    el.miniWrap.hidden = false;
-    el.speed.hidden = !this.single;
-    const aspect = this.cw.H / this.cw.W;
-    el.mini.width = 240;
-    el.mini.height = Math.round(240 * aspect);
-    this.unsub.push(this.cw.on((kind, data) => {
-      if (kind === 'snap') this.onSnap(data);
-      if (kind === 'events') this.onEvents(data);
-    }));
-    el.dock.innerHTML = DOCK.map(([k, ic, label]) => `<button data-dock="${k}"><img src="${icon(ic)}" alt="">${label}</button>`).join('');
-    this.bindInput();
-    this.bindPanels();
-    // Keep the CSS informed of the top bar's real height (it wraps on phones).
-    const measure = () => document.documentElement.style.setProperty('--top-h', `${Math.ceil(el.top.getBoundingClientRect().bottom)}px`);
-    this.topObserver = new ResizeObserver(measure);
-    this.topObserver.observe(el.top);
-    measure();
+    const el = this.el;
+    el.hud.hidden = false;
+    this.mq = window.matchMedia(COMPACT_QUERY);
     const relayout = () => {
-      this.compact = this.mqCompact.matches;
-      this.touch = this.mqTouch.matches;
-      if (!this.compact) this.full = false;
-      this.applyPanels();
-      this.lastPanel = 0;
+      this.compact = this.mq.matches;
+      el.mini.hidden = this.compact;
+      this.r.resize();
     };
-    this.mqCompact.addEventListener('change', relayout);
-    this.mqTouch.addEventListener('change', relayout);
-    this.unsub.push(() => {
-      this.mqCompact.removeEventListener('change', relayout);
-      this.mqTouch.removeEventListener('change', relayout);
-      this.topObserver.disconnect();
+    relayout();
+    this.mq.addEventListener('change', relayout);
+    this.listeners.push([this.mq, ['change', relayout]]);
+    el.speed.hidden = !this.single;
+    for (const [id, name] of [['i-land', 'flag'], ['i-pop', 'pop'], ['i-troops', 'soldier'], ['i-gold', 'coin']]) document.getElementById(id).src = icon(name);
+    el.ratio.value = Math.round(this.ratio * 100);
+    el.build.innerHTML = Object.entries(STRUCTURES)
+      .map(([k, d]) => `<button class="bb" data-build="${k}" title="${esc(d.name)}: ${esc(d.about)}"><img src="${icon(BUILD_ICON[k])}" alt=""><span class="bn">${esc(d.name)}</span><span class="bc" data-cost="${k}"></span></button>`)
+      .join('');
+    this.cw.on((kind, data) => {
+      if (kind === 'snap') this.onSnap(data);
+      else if (kind === 'events') this.onEvents(data);
     });
-    this.r.centerOn(this.cw.W / 2, this.cw.H / 2, this.compact ? 2 : 3);
-    this.applyPanels();
+    this.bindInput();
+    this.bindHud();
+    // Start over your own land, or over the whole map while choosing.
+    const me = this.cw.me;
+    if (me && me.spawned) this.home();
+    else this.r.centerOn(this.cw.W / 2, this.cw.H / 2, Math.sqrt((this.r.vw * this.r.vh) / (this.cw.W * this.cw.H)) * 0.9);
+    this.renderPlacement();
   }
 
   destroy() {
-    for (const u of this.unsub) u();
-    for (const [t, fn, opts] of this.listeners || []) t.removeEventListener(fn[0], fn[1], opts);
-    this.el.dock.hidden = true;
+    for (const [target, [ev, fn], opts] of this.listeners) target.removeEventListener(ev, fn, opts);
+    this.listeners = [];
+    this.el.hud.hidden = true;
+    this.el.placement.hidden = true;
+    this.el.mini.hidden = true;
+    this.el.popup.hidden = true;
     this.el.hint.hidden = true;
-    document.body.classList.remove('sheet-open', 'sheet-full');
+    this.el.tip.hidden = true;
   }
 
-  // -------------------------------------------------------------------------
-  // Layout: which panels show, and where the map is still visible
-
-  applyPanels() {
-    const { el, cw } = this;
-    const snap = cw.snap;
-    const placing = !!snap && snap.phase === 'placement' && cw.you >= 0 && !snap.kingdoms[cw.you].placed;
-    const playing = !!snap && cw.you >= 0 && !placing;
-    const rightWasHidden = el.right.hidden;
-    if (this.compact) {
-      if (this.sheet === 'select' && !this.hasLeft) this.sheet = null;
-      // While choosing a target on the map, sheets step aside.
-      el.left.hidden = this.sheet !== 'select' || !this.hasLeft || !!this.mode;
-      el.right.hidden = !playing || this.sheet !== 'tab' || !!this.mode;
-      el.dock.hidden = !playing;
-    } else {
-      el.left.hidden = !this.hasLeft;
-      el.right.hidden = !playing;
-      el.dock.hidden = true;
-    }
-    const open = this.compact && (!el.left.hidden || !el.right.hidden || !el.placement.hidden);
-    for (const p of [el.left, el.right, el.placement]) p.classList.toggle('full', this.compact && this.full);
-    document.body.classList.toggle('sheet-open', open);
-    document.body.classList.toggle('sheet-full', open && this.full);
-    this.updateDock();
-    if (rightWasHidden && !el.right.hidden) this.renderTab();
-  }
-
-  updateDock() {
-    const { el, cw } = this;
-    if (el.dock.hidden) return;
-    const props = cw.snap?.proposals || [];
-    for (const b of el.dock.querySelectorAll('button')) {
-      const k = b.dataset.dock;
-      b.classList.toggle('on', (k === 'town' && this.sheet === 'select') || (this.sheet === 'tab' && this.tab === k));
-      const alert = (k === 'trade' && props.some((p) => p.to === cw.you && !p.peace)) || (k === 'diplomacy' && props.some((p) => p.to === cw.you && p.peace));
-      b.classList.toggle('alert', alert);
-    }
-  }
-
-  dockTap(k) {
-    if (k === 'town') {
-      if (this.sheet === 'select') this.sheet = null;
-      else if (this.r.selection && this.hasLeft) this.sheet = 'select';
-      else {
-        const cap = this.cw.me && this.cw.settlement(this.cw.me.capital);
-        if (cap) {
-          this.select({ type: 'settlement', id: cap.id });
-          this.focusOn(cap.x, cap.y, Math.max(16, this.r.cam.ppt));
-          return;
-        }
-      }
-    } else if (this.sheet === 'tab' && this.tab === k) this.sheet = null;
-    else {
-      this.sheet = 'tab';
-      this.tab = k;
-    }
-    this.applyPanels();
-    this.renderTab();
-  }
-
-  /** The part of the screen not covered by bars and sheets (CSS pixels). */
-  visibleRect() {
-    const vw = this.r.vw;
-    const vh = this.r.vh;
-    const rect = { left: 0, top: this.el.top.getBoundingClientRect().bottom, right: vw, bottom: vh };
-    if (!this.compact) return rect;
-    const dock = this.el.dock;
-    if (!dock.hidden) {
-      const d = dock.getBoundingClientRect();
-      if (d.height > d.width) rect.left = Math.max(rect.left, d.right);
-      else rect.bottom = Math.min(rect.bottom, d.top);
-    }
-    for (const p of [this.el.left, this.el.right, this.el.placement]) {
-      if (p.hidden) continue;
-      const b = p.getBoundingClientRect();
-      if (b.width >= vw * 0.9) rect.bottom = Math.min(rect.bottom, b.top);
-      else rect.right = Math.min(rect.right, b.left);
-    }
-    return rect;
-  }
-
-  /** Centre the camera on a tile within the visible part of the screen. */
-  focusOn(x, y, ppt = null) {
-    this.r.centerOn(x, y, ppt);
-    const v = this.visibleRect();
-    this.r.cam.x -= ((v.left + v.right) / 2 - this.r.vw / 2) / this.r.cam.ppt;
-    this.r.cam.y -= ((v.top + v.bottom) / 2 - this.r.vh / 2) / this.r.cam.ppt;
-    this.r.clampCam();
-  }
-
-  /** Pan only if the tile is hidden behind a sheet or bar. */
-  ensureVisible(x, y) {
-    if (!this.compact) return;
-    const v = this.visibleRect();
-    const p = this.r.tileToScreen(x, y);
-    const m = 28;
-    if (p.x < v.left + m || p.x > v.right - m || p.y < v.top + m || p.y > v.bottom - m) this.focusOn(x, y);
-  }
-
-  /** A collapsible panel section that remembers whether it is open. */
-  sec(key, title, body, count = '') {
-    const open = this.secOpen[key] ?? true;
-    return `<details class="sec" data-sec="${key}" ${open ? 'open' : ''}><summary>${title}${count !== '' ? `<span class="count">${count}</span>` : ''}</summary>${body}</details>`;
-  }
-
-  /** Last value typed into a panel form field, or its default. */
-  fv(key, def) {
-    return this.formVals[key] ?? def;
+  on(target, ev, fn, opts) {
+    target.addEventListener(ev, fn, opts);
+    this.listeners.push([target, [ev, fn], opts]);
   }
 
   send(cmd) {
     this.tx.command(cmd);
   }
 
-  // -------------------------------------------------------------------------
-  // Snapshot handling
+  home() {
+    const cap = this.cw.snap?.structures.find((s) => s.owner === this.cw.you && s.capital) || this.cw.snap?.structures.find((s) => s.owner === this.cw.you);
+    const spot = this.cw.snap?.labels[this.cw.you];
+    const at = cap ? [cap.x, cap.y] : spot ? [spot[0], spot[1]] : null;
+    if (at) this.r.flyTo(at[0], at[1], Math.max(this.r.cam.ppt, 4));
+  }
+
+  // Snapshots ----------------------------------------------------------------
 
   onSnap(snap) {
-    this.renderTop(snap);
-    const placing = snap.phase === 'placement' && this.cw.you >= 0 && !snap.kingdoms[this.cw.you].placed;
-    if (placing) this.renderPlacement(snap);
-    else if (!this.el.placement.hidden) {
-      this.el.placement.hidden = true;
-      this.full = false;
-      this.r.preview = null;
-      const me = this.cw.me;
-      const cap = me && this.cw.settlement(me.capital);
-      if (cap) {
-        this.select({ type: 'settlement', id: cap.id });
-        this.focusOn(cap.x, cap.y, this.compact ? 16 : 24);
-        this.focused = true;
+    const el = this.el;
+    const me = this.cw.me;
+    setText(el.time, snap.phase === 'placement' ? 'Start' : clock(snap.time));
+    if (me && me.spawned) {
+      el.stats.hidden = false;
+      setText(el.land, pct(this.cw.share(this.cw.you)));
+      setText(el.pop, `${fmt(me.pop)}`);
+      el.pop.parentElement.style.setProperty('--fill', `${Math.min(100, (me.pop / Math.max(1, me.maxPop)) * 100).toFixed(0)}%`);
+      setText(el.troops, fmt(me.troops));
+      setText(el.gold, fmt(me.gold));
+      if (me.troopShare !== undefined && document.activeElement !== el.share && !this.shareDrag) {
+        const v = String(Math.round(me.troopShare * 100));
+        if (el.share.value !== v) el.share.value = v;
       }
-    } else if (!this.focused && snap.phase !== 'placement') {
-      // Joining a match already under way (a saved realm, a reconnect): start at home.
-      const cap = this.cw.me && this.cw.settlement(this.cw.me.capital);
-      if (cap) this.focusOn(cap.x, cap.y, 16);
-      this.focused = true;
-    }
-    this.applyPanels();
-    const now = performance.now();
-    if (now - this.lastPanel > 450) {
-      this.lastPanel = now;
-      this.renderLeft();
-      this.renderTab();
-    }
-    if (snap.winner && !this.shownEnd) {
-      this.shownEnd = true;
+      this.updateSliders();
+      for (const b of el.build.querySelectorAll('[data-cost]')) {
+        const c = me.costs?.[b.dataset.cost] ?? 0;
+        setText(b, fmt(c));
+        b.parentElement.classList.toggle('poor', (me.gold ?? 0) < c);
+      }
+    } else el.stats.hidden = this.cw.you < 0 || snap.phase === 'placement';
+    el.bar.hidden = !(me && me.alive && snap.phase === 'running');
+    this.renderPlacement();
+    this.renderNotices(snap);
+    this.renderAttacks(snap);
+    if (this.boardOpen && (!this.boardAt || performance.now() - this.boardAt > 900)) this.renderBoard();
+    if (this.popupAt) this.refreshPopup();
+    if (snap.phase === 'over' && snap.winner && !this.ended) {
+      this.ended = true;
       this.showEnd(snap);
+    } else if (me && me.spawned && !me.alive && !this.fallenShown && snap.phase === 'running') {
+      this.fallenShown = true;
+      this.onQuit('end', `<h2>Your realm has fallen</h2><p>${esc(me.name)} held ${pct(me.tiles / Math.max(1, this.cw.init.landTotal))} of the land at the end. The race goes on without you.</p>${this.standingsHtml(snap)}`);
     }
+  }
+
+  updateSliders() {
+    const el = this.el;
+    const me = this.cw.me;
+    const share = Number(el.share.value) / 100;
+    setText(el.shareV, `${Math.round(share * 100)}%`);
+    const send = me ? me.troops * this.ratio : 0;
+    setText(el.ratioV, `${Math.round(this.ratio * 100)}% · ${fmt(send)}`);
   }
 
   onEvents(evs) {
     for (const e of evs) {
       if (!TOAST_KINDS.has(e.kind)) continue;
-      if (e.kind === 'info' && !/begins|accepted|declined|agreement/i.test(e.text)) continue;
+      // Other realms' news only when it is big.
+      const mine = !PUBLIC_TOAST.has(e.kind) || e.text.includes(this.cw.me?.name || '\u0000');
+      if (!mine && e.kind === 'alliance') continue;
       this.toast(e.text, e.kind);
     }
   }
@@ -316,810 +212,388 @@ export class GameUI {
     t.className = `toast ${kind}`;
     t.textContent = text;
     this.el.toasts.appendChild(t);
-    // Phones keep the map clear: fewer notices, shown more briefly (the chronicle keeps them all).
-    const max = this.compact ? 2 : 4;
-    while (this.el.toasts.children.length > max) this.el.toasts.firstChild.remove();
-    setTimeout(() => t.remove(), kind === 'victory' ? 12000 : this.compact ? 3600 : 5200);
+    while (this.el.toasts.children.length > 3) this.el.toasts.firstChild.remove();
+    setTimeout(() => t.classList.add('out'), kind === 'error' ? 2600 : 3400);
+    setTimeout(() => t.remove(), kind === 'error' ? 3000 : 3800);
   }
 
-  renderTop(snap) {
-    const { el } = this;
+  /** Alliance requests and incoming attacks, as small chips under the top bar. */
+  renderNotices(snap) {
+    const you = this.cw.you;
+    const rows = [];
+    for (const r of snap.requests) {
+      if (r.to !== you) continue;
+      const p = this.cw.player(r.from);
+      rows.push(`<div class="notice ally"><span class="dot" style="background:${p.color}"></span><span class="nt">${esc(p.name)} ${r.renew ? 'renews' : 'offers'} an alliance</span><button data-answer="${r.id}" data-yes="1" class="yes" title="Accept">✓</button><button data-answer="${r.id}" class="no" title="Decline">✕</button></div>`);
+    }
+    const incoming = snap.attacks.filter((a) => a.to === you).sort((a, b) => b.troops - a.troops).slice(0, 2);
+    for (const a of incoming) {
+      const p = this.cw.player(a.from);
+      rows.push(`<div class="notice war"><span class="dot" style="background:${p.color}"></span><span class="nt">${esc(p.name)} attacks · ${fmt(a.troops)}</span></div>`);
+    }
     const me = this.cw.me;
-    el.time.textContent = snap.phase === 'placement' ? (this.single ? 'Choose your capital' : `Placement ${Math.ceil(snap.placementLeft)}s`) : clock(snap.time);
-    if (!me) {
-      el.realm.textContent = 'Spectating';
-      el.res.innerHTML = '';
+    if (me?.traitor) rows.push(`<div class="notice war"><span class="nt">Traitor: your land is easier to take for ${Math.ceil(me.traitor)} s</span></div>`);
+    const html = rows.join('');
+    if (html !== this.noticesHtml) {
+      this.noticesHtml = html;
+      this.el.notices.innerHTML = html;
+    }
+  }
+
+  /** Your attacks under way, each with a button to call it off. */
+  renderAttacks(snap) {
+    const you = this.cw.you;
+    const mine = snap.attacks.filter((a) => a.from === you).sort((a, b) => b.troops - a.troops).slice(0, 3);
+    const boats = snap.boats.filter((b) => b.owner === you && b.kind === 'transport');
+    const rows = mine.map((a) => {
+      const p = this.cw.player(a.to);
+      return `<div class="atk"><span class="dot" style="background:${p ? p.color : '#9a9a8a'}"></span>${a.landing ? '⚓ ' : ''}${esc(p ? p.name : 'Wilds')} <b>${fmt(a.troops)}</b><button data-retreat="${a.id}" title="Call off (troops come home)">✕</button></div>`;
+    });
+    if (boats.length) rows.push(`<div class="atk">⛵ ${boats.length} at sea · <b>${fmt(boats.reduce((t, b) => t + (b.troops || 0), 0))}</b></div>`);
+    const html = rows.join('');
+    if (html !== this.attacksHtml) {
+      this.attacksHtml = html;
+      this.el.attacks.innerHTML = html;
+    }
+  }
+
+  standingsHtml(snap) {
+    const rows = [...snap.players]
+      .filter((p) => p.spawned)
+      .sort((a, b) => b.tiles - a.tiles)
+      .slice(0, 12)
+      .map((p, k) => `<tr class="${p.id === this.cw.you ? 'me' : ''}"><td>${k + 1}</td><td><span class="dot" style="background:${p.color}"></span>${esc(p.name)}</td><td>${pct(p.tiles / Math.max(1, this.cw.init.landTotal))}</td><td>${fmt(p.troops)}</td></tr>`)
+      .join('');
+    return `<table class="t"><tr><th>#</th><th>Realm</th><th>Land</th><th>Troops</th></tr>${rows}</table>`;
+  }
+
+  renderBoard() {
+    const snap = this.cw.snap;
+    if (!snap) return;
+    this.boardAt = performance.now();
+    const you = this.cw.you;
+    const list = [...snap.players].filter((p) => p.spawned).sort((a, b) => b.tiles - a.tiles);
+    const top = list.slice(0, this.compact ? 6 : 10);
+    const meIdx = list.findIndex((p) => p.id === you);
+    if (meIdx >= top.length) top.push(list[meIdx]);
+    const html = top
+      .map((p) => {
+        const rank = list.indexOf(p) + 1;
+        const ally = this.cw.allied(you, p.id) ? ' <span class="tag good">ally</span>' : '';
+        return `<button class="lb${p.id === you ? ' me' : ''}${p.alive ? '' : ' dead'}" data-player="${p.id}"><span class="rk">${rank}</span><span class="dot" style="background:${p.color}"></span><span class="nm">${esc(p.name)}${ally}</span><span class="pc">${pct(p.tiles / Math.max(1, this.cw.init.landTotal))}</span></button>`;
+      })
+      .join('');
+    const goal = `<div class="goal">First to ${Math.round(this.cw.init.winShare * 100)}% of the land wins</div>`;
+    if (html + goal !== this.boardHtml) {
+      this.boardHtml = html + goal;
+      this.el.board.innerHTML = this.boardHtml;
+    }
+  }
+
+  // Placement ------------------------------------------------------------------
+
+  renderPlacement() {
+    const snap = this.cw.snap;
+    const el = this.el.placement;
+    const me = this.cw.me;
+    const choosing = snap && snap.phase === 'placement' && me && !me.spawned;
+    if (!choosing) {
+      if (!el.hidden) {
+        el.hidden = true;
+        this.r.preview = null;
+        this.r.sites = null;
+        if (snap?.phase === 'running' && me?.spawned && !this.homed) {
+          this.homed = true;
+          this.home();
+        }
+      }
       return;
     }
-    el.crest.style.background = me.color;
-    el.realm.textContent = me.name;
-    if (!me.stock) return;
-    const cells = {};
-    for (const r of [...RES_KEYS, 'coin']) {
-      const v = r === 'coin' ? me.coin : me.stock[r] || 0;
-      const rate = (me.rates?.[r] || 0) * 60;
-      const short = (r === 'food' && me.flags?.starving) || (r === 'coin' && me.flags?.unpaid);
-      const name = r === 'coin' ? 'Gold' : RESOURCES[r].name;
-      const trend = rate > 0.5 ? 'up' : rate < -0.5 ? 'down' : '';
-      cells[r] = `<div class="res${short ? ' short' : ''} ${trend}" data-tip="${esc(name)}: ${Math.round(v)} (${rate >= 0 ? '+' : ''}${rate.toFixed(1)} per minute)">${iconImg(RES_ICON[r], name)}<b>${fmt(v)}</b><span class="rate ${trend}">${rate > 0.5 ? '▲' : rate < -0.5 ? '▼' : ''}</span></div>`;
+    this.r.sites = this.cw.init.startSites;
+    const left = this.cw.init.opts.placementTime > 0 ? ` · ${Math.max(0, Math.ceil(snap.placementLeft))} s` : '';
+    const pick = this.spawnPick;
+    const html = pick
+      ? `<span class="pt">${pick.err ? esc(pick.err) : 'Start here?'}${left}</span><span class="pb">${pick.err ? '' : '<button class="btn go" data-spawn="go">Start</button>'}<button class="btn" data-spawn="cancel">✕</button></span>`
+      : `<span class="pt">Tap open land to choose where your realm begins${left}</span>`;
+    if (html !== this.placeHtml) {
+      this.placeHtml = html;
+      el.innerHTML = html;
     }
-    const st = me.stats || {};
-    cells.pop = `<div class="res" data-tip="Population: ${st.pop} (${st.workers || 0} working, ${st.idle || 0} idle)">${iconImg('pop', 'Population')}<b>${fmt(st.pop || 0)}</b></div>`;
-    cells.soldiers = `<div class="res" data-tip="Soldiers in garrisons and armies: ${st.soldiers || 0}">${iconImg('soldier', 'Soldiers')}<b>${fmt(st.soldiers || 0)}</b></div>`;
-    const order = this.compact ? COMPACT_ORDER : [...RES_KEYS, 'coin', 'pop', 'soldiers'];
-    const html = order.map((k) => cells[k]).join('');
-    // Rewriting the strip resets its scroll position on phones; only touch it when it changed.
-    if (html !== this.lastRes) {
-      const sl = el.res.scrollLeft;
-      el.res.innerHTML = html;
-      el.res.scrollLeft = sl;
-      this.lastRes = html;
+    el.hidden = false;
+  }
+
+  spawnError(x, y) {
+    if (!canFoundAt(this.cw.world, x, y)) return 'Pick open land to start on.';
+    if (this.cw.ownerAt(x, y) >= 0) return 'Someone already holds that land.';
+    for (const p of this.cw.snap.players) {
+      if (!p.spawned) continue;
+      const spot = this.cw.snap.labels[p.id];
+      if (spot && Math.hypot(spot[0] - x, spot[1] - y) < RULES.spawnSpacing) return 'Too close to another realm.';
     }
-    for (const b of el.speed.querySelectorAll('button')) b.classList.toggle('on', Number(b.dataset.speed) === this.speed);
-  }
-
-  // -------------------------------------------------------------------------
-  // Selection panel
-
-  select(sel) {
-    const changed = JSON.stringify(sel) !== JSON.stringify(this.r.selection);
-    this.r.selection = sel;
-    if (this.compact) {
-      if (sel) this.sheet = 'select';
-      else if (this.sheet === 'select') this.sheet = null;
-    }
-    if (changed) this.full = false;
-    this.lastPanel = 0;
-    this.renderLeft();
-  }
-
-  renderLeft() {
-    const { el, cw } = this;
-    const sel = this.r.selection;
-    if (el.left.contains(document.activeElement) && ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (this.pressing && el.left.contains(this.pressing)) return; // never swap a button out from under a finger
-    let html = '';
-    if (sel && cw.snap) {
-      if (sel.type === 'settlement') {
-        const s = cw.settlement(sel.id);
-        if (s) html = s.kingdom === cw.you ? this.ownSettlementHtml(s) : this.foreignSettlementHtml(s);
-      } else if (sel.type === 'army') {
-        const a = cw.army(sel.id);
-        if (a) html = this.armyHtml(a);
-      }
-    }
-    this.hasLeft = !!html;
-    if (html && html !== this.lastLeft) {
-      const scroll = el.left.querySelector('.scroll');
-      const top = scroll ? scroll.scrollTop : 0;
-      el.left.innerHTML = html;
-      const ns = el.left.querySelector('.scroll');
-      if (ns) ns.scrollTop = top;
-      this.lastLeft = html;
-    }
-    if (!html) this.lastLeft = '';
-    this.applyPanels();
-  }
-
-  /** Sheet header with a drag handle on phones. */
-  headHtml(title, sub, subStyle = '') {
-    return `<div class="head" data-grip><span class="grip" aria-hidden="true"></span><h2>${title}</h2><div class="sub"${subStyle ? ` style="${subStyle}"` : ''}>${sub}</div><button class="close" data-act="close" title="Close (Esc)">✕</button></div>`;
-  }
-
-  ownSettlementHtml(s) {
-    const cw = this.cw;
-    const me = cw.me;
-    const stage = STAGES[s.stage];
-    const L = cw.layouts.get(s.id);
-    const style = L ? STYLES[L.style]?.name : '';
-    const tags = [];
-    tags.push(s.connected ? '<span class="tag good">Road to capital</span>' : '<span class="tag bad">No road to capital</span>');
-    if (s.unrest > 0) tags.push(`<span class="tag bad">Unrest ${Math.ceil(s.unrest)}s</span>`);
-    if (s.siege) tags.push('<span class="tag bad">Under siege!</span>');
-    if (s.full) tags.push('<span class="tag bad">No room for houses</span>');
-    if (s.crowded) tags.push('<span class="tag">Needs to grow for more houses</span>');
-    const out = [];
-    for (const [r, v] of Object.entries(s.out || {})) if (v > 0.001) out.push(`<span>${iconImg(RES_ICON[r], r)} ${(v * 60).toFixed(1)}/min</span>`);
-    const jobs = s.jobs?.assigned || {};
-    const slots = s.jobs?.slots || {};
-    const work = LABOR.filter((c) => slots[c]).map((c) => `<div class="row small"><span>${LABOR_NAMES[c]}</span><span>${jobs[c] || 0}/${slots[c]}</span></div>`).join('');
-    const g = s.garrison || {};
-    const hasTroops = Object.values(g).some((n) => n >= 1);
-    // Growth.
-    let grow = '';
-    let canGrow = false;
-    const next = STAGES[s.stage + 1];
-    const growing = (s.projects || []).some((p) => p.type === 'stage');
-    if (next) {
-      const up = next.up;
-      const popNeed = stagePopNeed(s);
-      const reqs = [`${Math.floor(s.pop)}/${popNeed} people${popNeed < up.pop ? ' (out of room)' : ''}`];
-      for (const n of up.needs || []) if (!(n === 'hall' && s.capital)) reqs.push(`${s.buildings[n] ? '✓' : '✗'} ${BUILDINGS[n].name}`);
-      if (up.connected) reqs.push(`${s.connected ? '✓' : '✗'} road to the capital`);
-      canGrow = s.pop >= popNeed && (up.needs || []).every((n) => (n === 'hall' && s.capital) || s.buildings[n]) && (!up.connected || s.connected) && canPay(me, up.cost) && !growing;
-      grow = this.sec('grow', `Grow into a ${next.name.toLowerCase()}`, `
-        <div class="small muted">${reqs.join(' · ')}</div>
-        <div class="row"><span class="cost">${costHtml(up.cost, me)}</span><button class="btn go small" data-act="upgrade" ${canGrow ? '' : 'disabled'}>${growing ? 'Growing…' : 'Grow'}</button></div>
-        <div class="small muted">A ${next.name.toLowerCase()} claims more land (radius ${next.radius}), holds up to ${next.maxHouses} houses and ${next.maxBuild} buildings.</div>`);
-    }
-    // Quick actions: what a ruler does most often, without scrolling.
-    const canSettle = s.stage >= 1 && s.pop >= RULES.settlerMinPop;
-    const quick = `<div class="quick">
-        ${next ? `<button class="btn go" data-act="upgrade" ${canGrow ? '' : 'disabled'} title="Grow into a ${next.name.toLowerCase()}">${iconImg('crown')}${growing ? 'Growing' : 'Grow'}</button>` : ''}
-        <button class="btn" data-act="mode-found" ${canSettle ? '' : 'disabled'} title="${RULES.settlerPop} settlers, ${RULES.settlerCost.wood} wood, ${RULES.settlerCost.food} food">${iconImg('house')}Settlers</button>
-        <button class="btn" data-act="mode-road" title="Build a road to another settlement">${iconImg('stone')}Road</button>
-        <button class="btn" data-act="army" ${hasTroops ? '' : 'disabled'} title="March the garrison out as an army">${iconImg('soldier')}Army</button>
-      </div>
-      <div class="small muted">${canSettle ? `Settlers take ${RULES.settlerPop} people, ${RULES.settlerCost.wood} wood and ${RULES.settlerCost.food} food to found an outpost within ${RULES.maxFoundDistance} tiles.` : `Settlers leave from a hamlet of at least ${RULES.settlerMinPop} people.`}</div>`;
-    // Projects.
-    const projectList = s.projects || [];
-    const projects = projectList.map((p) => {
-      const name = p.type === 'house' ? 'House' : p.type === 'stage' ? `Growing to ${STAGES[p.to].name}` : p.type === 'walls' ? WALLS[p.to].name : BUILDINGS[p.kind]?.name || p.kind;
-      const pct = Math.min(100, (p.progress / p.work) * 100);
-      return `<div class="row small"><span style="flex:1">${esc(name)}<div class="bar warm"><i style="width:${pct}%"></i></div></span>${p.type === 'building' || p.type === 'house' ? `<button class="btn small" data-act="cancel" data-pid="${p.id}" title="Cancel (half the materials come back)">✕</button>` : ''}</div>`;
-    }).join('') || '<div class="small muted">Nothing under construction.</div>';
-    // Build list: what can be built now first, the rest folded away.
-    const nonHouse = Object.entries(s.buildings).reduce((a, [k, v]) => a + (BUILDINGS[k] ? v : 0), 0) + projectList.filter((p) => p.type === 'building').length;
-    const now = [];
-    const later = [];
-    for (const [kind, def] of Object.entries(BUILDINGS)) {
-      let why = '';
-      const have = (s.buildings[kind] || 0) + projectList.filter((p) => p.kind === kind).length;
-      if (s.stage < def.stage) why = `needs a ${STAGES[def.stage].name.toLowerCase()}`;
-      else if (def.capitalOnly && !s.capital) why = 'capital only';
-      else if (def.notCapital && s.capital) why = 'not in the capital';
-      else if (def.once && have) why = 'already built';
-      else if (def.site && !(s.site?.[def.site] > 0)) why = { iron: 'no iron vein nearby', water: 'no water nearby', coast: 'no coast' }[def.site] || 'unsuitable land';
-      else if (nonHouse >= stage.maxBuild) why = 'settlement full: grow it';
-      else if (s.unrest > 0) why = 'unrest';
-      if (s.stage + 1 < def.stage) continue;
-      const afford = canPay(me, def.cost);
-      const count = s.buildings[kind] ? ` ×${s.buildings[kind]}` : '';
-      const html = `<div class="item ${why ? 'disabled' : ''}"><span class="name">${esc(def.name)}${count}</span><button class="btn small ${afford && !why ? 'go' : ''}" data-act="build" data-kind="${kind}" ${why ? 'disabled' : ''}>Build</button><span class="cost">${costHtml(def.cost, me)}</span><span class="small muted">${def.jobs ? `${def.jobs} jobs` : ''}</span><span class="desc">${esc(why ? `${why} — ${def.desc}` : def.desc)}</span></div>`;
-      (why ? later : now).push(html);
-    }
-    const build = `<div class="list">${now.join('') || '<div class="small muted">Nothing can be built here right now.</div>'}</div>${later.length ? `<details class="later"><summary>Not available here yet (${later.length})</summary><div class="list">${later.join('')}</div></details>` : ''}`;
-    // Military.
-    const garrison = Object.entries(g).filter(([, n]) => n >= 0.5).map(([u, n]) => `${UNITS[u].name} ${Math.floor(n)}`).join(', ') || 'none';
-    const training = (s.training || []).map((t) => `${t.n} ${UNITS[t.unit].name.toLowerCase()} (${Math.ceil(t.t)}s)`).join(', ');
-    const cap = (s.buildings.barracks || 0) * 10;
-    const recruit = UNIT_ORDER.map((u) => {
-      const def = UNITS[u];
-      const off = !cap || (def.needsStage && s.stage < def.needsStage);
-      return `<div class="item ${off ? 'disabled' : ''}"><span class="name">${def.name} <span class="small muted">atk ${def.atk} def ${def.def}</span></span><span class="stepper"><input type="number" inputmode="numeric" min="1" max="10" value="${this.recruitN[u]}" data-n="${u}" aria-label="How many"><button class="btn small" data-act="recruit" data-unit="${u}" ${off ? 'disabled' : ''}>Train</button></span><span class="cost">${costHtml(def.cost, me)} each · ${def.train}s</span><span class="desc">${esc(def.desc)} Upkeep ${def.food} food and ${def.coin} gold per second.</span></div>`;
-    }).join('');
-    const military = `<div class="small">${garrison}${training ? `<br><span class="muted">Training: ${training}</span>` : ''}</div>
-        <div class="small muted">${cap ? `Barracks train ${cap} at a time.` : 'Build barracks to train soldiers.'} Recruits leave their jobs at once.</div>
-        <div class="list">${recruit}</div>
-        <div class="btns">
-          <button class="btn small" data-act="levy" title="Call up militia: fast, weak, costs workers">Levy militia</button>
-          <button class="btn small" data-act="demob" ${hasTroops ? '' : 'disabled'} title="Soldiers return to work after ${RULES.demobilizeTime}s">Send soldiers home</button>
-        </div>`;
-    const nextWall = WALLS[s.walls.level + 1];
-    const walls = `<div class="row"><span>${s.walls.level ? `${WALLS[s.walls.level].name} (${Math.round(s.walls.hp)}/${WALLS[s.walls.level].hp})` : 'No walls'}</span>${nextWall ? `<button class="btn small" data-act="walls" ${s.stage >= 1 && (!nextWall.stage || s.stage >= nextWall.stage) && canPay(me, nextWall.cost) ? '' : 'disabled'}>${s.walls.level ? 'Upgrade' : 'Build'} ${esc(nextWall.name.toLowerCase())}</button>` : ''}</div>${nextWall ? `<div class="small muted">${costHtml(nextWall.cost, me)} · defenders ×${nextWall.def}${nextWall.stage ? ` · needs a ${STAGES[nextWall.stage].name.toLowerCase()}` : ''}</div>` : ''}`;
-    const soldiersHere = Object.values(g).reduce((a, n) => a + n, 0);
-    return `${this.headHtml(esc(s.name), `${stage.name}${s.capital ? ' · Capital' : ''} · ${esc(style)} style`)}
-      <div class="scroll">
-        <div class="row"><span>${iconImg('pop')} ${Math.floor(s.pop)} / ${s.housing} people</span><span class="small muted">${s.houses || 0}/${stage.maxHouses} houses · prosperity ${Math.round((s.prosperity || 1) * 100)}%</span></div>
-        <div class="bar"><i style="width:${Math.min(100, (s.pop / Math.max(1, s.housing)) * 100)}%"></i></div>
-        <div style="margin-top:6px">${tags.join('')}</div>
-        ${out.length ? `<div class="chips">${out.join('')}</div>` : ''}
-        ${quick}
-        ${grow}
-        ${this.sec('construction', 'Construction', projects, projectList.length || '')}
-        ${this.sec('build', 'Build', build, now.length)}
-        ${this.sec('work', 'Work', `${work || '<div class="small muted">No workplaces yet.</div>'}<div class="small muted">${s.jobs?.idle || 0} idle (they forage, gather deadwood and help build)</div>`, `${s.jobs?.idle || 0} idle`)}
-        ${this.sec('military', 'Garrison and recruits', military, Math.floor(soldiersHere))}
-        ${this.sec('walls', 'Walls', walls)}
-      </div>`;
-  }
-
-  foreignSettlementHtml(s) {
-    const cw = this.cw;
-    const owner = s.hub ? 'Free city (neutral)' : cw.kingdom(s.kingdom)?.name || 'Unknown';
-    const atWar = !s.hub && cw.me && cw.me.relations?.[s.kingdom] === 'war';
-    const prices = s.hub ? RES_KEYS.map((r) => `<tr><td>${iconImg(RES_ICON[r])} ${RESOURCES[r].name}</td><td>${cw.snap.prices[r]}</td></tr>`).join('') : '';
-    const marchHow = this.touch ? 'select one of your armies, tap Move… and then this town' : 'select an army and right-click this town';
-    return `${this.headHtml(esc(s.name), esc(owner), `color:${cw.colorOf(s.kingdom)}`)}
-      <div class="scroll">
-        <div class="row"><span>${STAGES[s.stage].name}</span><span>${Math.floor(s.pop)} people</span></div>
-        <div class="row"><span>Walls</span><span>${s.walls.level ? `${WALLS[s.walls.level].name} (${Math.round(s.walls.hp)})` : 'none'}</span></div>
-        ${s.hub ? '' : `<div class="row"><span>Garrison (estimate)</span><span>~${s.garrisonApprox ?? '?'}</span></div>`}
-        ${s.siege ? '<div class="tag bad">Under siege</div>' : ''}
-        ${s.hub ? `<h3>Market prices</h3><table class="t">${prices}</table><p class="small muted">Free cities buy and sell everything. Caravans from your markets trade here; roads shorten the journey.</p>` : ''}
-        ${atWar ? `<p class="small">You are at war: ${marchHow} to besiege it. Walls must fall before the town can be taken.</p>` : ''}
-      </div>`;
-  }
-
-  armyHtml(a) {
-    const cw = this.cw;
-    const mine = a.kid === cw.you;
-    if (!mine) {
-      return `${this.headHtml('Army', esc(cw.kingdom(a.kid)?.name || ''), `color:${cw.colorOf(a.kid)}`)}
-        <div class="scroll"><div class="row"><span>Strength</span><span>${Math.round(a.n)}</span></div><div class="row"><span>State</span><span>${a.state}</span></div></div>`;
-    }
-    const units = Object.entries(a.units || {}).filter(([, n]) => n >= 0.5).map(([u, n]) => `<div class="row"><span>${UNITS[u].name}</span><span>${Math.round(n)}</span></div>`).join('');
-    const near = cw.mySettlements().find((s) => Math.hypot(s.x - a.x, s.y - a.y) < 2.5);
-    const state = a.state === 'siege' ? 'Besieging' : a.state === 'battle' ? 'In battle!' : a.state === 'retreat' ? 'Retreating' : a.state === 'moving' ? 'Marching' : 'Waiting';
-    return `${this.headHtml('Army', state)}
-      <div class="scroll">
-        <div class="quick"><button class="btn go" data-act="mode-move" ${a.state === 'retreat' ? 'disabled' : ''}>${iconImg('banner')}Move…</button><button class="btn" data-act="garrison" ${near ? '' : 'disabled'}>${iconImg('house')}${near ? `Into ${esc(near.name)}` : 'Garrison'}</button></div>
-        ${units}
-        <h3>Morale</h3><div class="bar ${a.morale < 0.4 ? 'red' : ''}"><i style="width:${Math.round(a.morale * 100)}%"></i></div>
-        <h3>Supply</h3><div class="bar ${a.inSupply ? '' : 'warm'}"><i style="width:${Math.round((a.supply / RULES.supplyCap) * 100)}%"></i></div>
-        <div class="small muted">${a.inSupply ? 'In supply: fed from your stores.' : `Out of supply range (${RULES.supplyRange} tiles from your land): eating carried rations. Starving armies lose men.`}</div>
-        <p class="small muted">${this.touch ? 'Tap Move… and choose a place, or long-press the map, to march.' : 'Right-click the map to march.'} Armies cannot cross the borders of kingdoms you are at peace with. Roads double speed; rivers without bridges are slow and weaken attackers.</p>
-      </div>`;
-  }
-
-  // -------------------------------------------------------------------------
-  // Realm tabs
-
-  renderTab() {
-    const { el, cw } = this;
-    if (el.right.hidden || !cw.snap || !cw.me) return;
-    if (el.right.contains(document.activeElement) && ['INPUT', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (this.pressing && el.right.contains(this.pressing)) return;
-    for (const b of el.tabs.querySelectorAll('button')) b.classList.toggle('on', b.dataset.tab === this.tab);
-    el.rightTitle.textContent = TAB_NAMES[this.tab];
-    this.updateDock();
-    const html = { realm: () => this.realmHtml(), trade: () => this.tradeHtml(), diplomacy: () => this.diplomacyHtml(), chronicle: () => this.chronicleHtml() }[this.tab]();
-    if (html === this.lastTab) return;
-    this.lastTab = html;
-    const top = el.tabBody.scrollTop;
-    el.tabBody.innerHTML = html;
-    el.tabBody.scrollTop = top;
-  }
-
-  realmHtml() {
-    const { cw } = this;
-    const me = cw.me;
-    const flags = [];
-    if (me.flags?.starving) flags.push('<span class="tag bad">Starving</span>');
-    if (me.flags?.unpaid) flags.push('<span class="tag bad">Soldiers unpaid</span>');
-    const prio = LABOR.map((c) => `<span>${LABOR_NAMES[c]}</span><span class="levels">${LEVELS.map((n, i) => `<button class="${me.priorities[c] === i ? 'on' : ''}" data-act="prio" data-cat="${c}" data-level="${i}">${n}</button>`).join('')}</span>`).join('');
-    const towns = cw.mySettlements().sort((a, b) => b.pop - a.pop).map((s) => `<tr data-act="goto" data-sid="${s.id}" style="cursor:pointer"><td>${s.capital ? '★ ' : ''}${esc(s.name)}</td><td>${STAGES[s.stage].name}</td><td>${Math.floor(s.pop)}</td><td>${s.connected ? '' : '<span class="bad" title="No road to the capital: deliveries lose part of their goods">⚠</span>'}</td></tr>`).join('');
-    const need = me.need ? `${(me.need.food * 60).toFixed(0)} food per minute` : '';
-    return `<h3>${esc(me.name)}</h3>
-      <div class="grid2 small"><span>Population</span><b>${me.stats.pop}</b><span>Soldiers</span><b>${me.stats.soldiers}</b><span>Settlements</span><b>${me.stats.settlements}</b><span>Score</span><b>${me.score}</b></div>
-      <div style="margin-top:6px">${flags.join('')}</div>
-      ${need ? `<div class="small muted">Your people consume ${need}.</div>` : ''}
-      ${me.wonderHeld > 0 ? `<div class="tag good">Grand Exchange held ${Math.floor(me.wonderHeld)}/${RULES.wonderHold}s</div>` : ''}
-      ${me.domHeld > 0 ? `<div class="tag good">Dominating the realm ${Math.floor(me.domHeld)}/${RULES.dominationHold}s</div>` : ''}
-      <h3>Labour priorities</h3>
-      <div class="prio small">${prio}</div>
-      <div class="small muted">Workers fill the jobs of high-priority work first. Building covers houses, projects and roads.</div>
-      <h3>Settlements</h3>
-      <table class="t"><tr><th>Name</th><th>Stage</th><th>Pop</th><th></th></tr>${towns}</table>`;
-  }
-
-  tradeHtml() {
-    const { cw } = this;
-    const me = cw.me;
-    const snap = cw.snap;
-    const prices = RES_KEYS.map((r) => {
-      const p = snap.prices[r];
-      const base = RESOURCES[r].price;
-      const trend = p > base * 1.08 ? '<span class="bad">▲</span>' : p < base * 0.92 ? '<span class="good">▼</span>' : '';
-      return `<tr><td>${iconImg(RES_ICON[r])} ${RESOURCES[r].name}</td><td>${p.toFixed(2)} ${trend}</td><td class="muted">${Math.floor(me.stock[r] || 0)}</td></tr>`;
-    }).join('');
-    const markets = cw.mySettlements().filter((s) => s.buildings.market);
-    const caravans = snap.parties.filter((p) => p.kid === cw.you && p.kind === 'caravan').length;
-    const slots = cw.mySettlements().reduce((a, s) => a + (s.buildings.market || 0) * 2, 0);
-    const orders = (me.orders || []).map((o) => `<div class="row small"><span>${o.side === 'sell' ? 'Sell' : 'Buy'} ${o.amount} ${o.res} when ${o.side === 'sell' ? `stock > ${o.keep} and price ≥ ${o.limit}` : `stock < ${o.keep} and price ≤ ${o.limit}`}</span><button class="btn small" data-act="cancel-order" data-oid="${o.id}">✕</button></div>`).join('') || '<div class="small muted">No standing orders.</div>';
-    const ags = (snap.agreements || []).map((a) => {
-      const other = cw.kingdom(a.a === cw.you ? a.b : a.a);
-      const give = a.a === cw.you ? a.give : a.get;
-      const get = a.a === cw.you ? a.get : a.give;
-      return `<div class="small">With ${esc(other?.name)}: you give ${give.n} ${give.res}, get ${get.n} ${get.res} every ${a.every}s (${a.left} left)</div>`;
-    }).join('') || '<div class="small muted">None.</div>';
-    const incoming = (snap.proposals || []).filter((p) => p.to === cw.you && !p.peace).map((p) => `<div class="item"><span>${esc(cw.kingdom(p.from)?.name)} offers ${p.give.n} ${p.give.res} for your ${p.get.n} ${p.get.res}, ${p.times}× every ${p.every}s</span><span><button class="btn small go" data-act="respond" data-id="${p.id}" data-accept="1">Accept</button> <button class="btn small" data-act="respond" data-id="${p.id}" data-accept="0">No</button></span></div>`).join('');
-    const resSel = this.fv('res', 'food');
-    const opt = RES_KEYS.map((r) => `<option value="${r}" ${r === resSel ? 'selected' : ''}>${RESOURCES[r].name}</option>`).join('');
-    const side = this.fv('side', 'sell');
-    return `<h3>Free-city market</h3><table class="t"><tr><th>Good</th><th>Price</th><th>You have</th></tr>${prices}</table>
-      <div class="small muted">Prices follow supply and demand at the free cities: selling a lot lowers the price, buying raises it. Caravans pay ${RULES.caravanCostPerTile} gold per tile each way and take time to travel; each market sends two.</div>
-      <h3>Standing orders</h3>
-      <div class="small">${markets.length ? `Caravans: ${caravans}/${slots}` : '<span class="bad">Build a market to trade.</span>'}</div>
-      ${orders}
-      <div class="form-grid">
-        <span>Order</span><span class="propose"><select data-f="side"><option value="sell" ${side === 'sell' ? 'selected' : ''}>Sell</option><option value="buy" ${side === 'buy' ? 'selected' : ''}>Buy</option></select><input data-f="amount" type="number" inputmode="numeric" value="${esc(this.fv('amount', 40))}" min="1" max="200"><select data-f="res">${opt}</select></span>
-        <span>${side === 'sell' ? 'While stock above' : 'While stock below'}</span><input data-f="keep" type="number" inputmode="numeric" value="${esc(this.fv('keep', 200))}">
-        <span>${side === 'sell' ? 'At a price of at least' : 'At a price of at most'}</span><input data-f="limit" type="number" inputmode="decimal" step="0.1" value="${esc(this.fv('limit', 2))}">
-        <span class="wide"><button class="btn small go" data-act="add-order" ${markets.length ? '' : 'disabled'}>Add standing order</button></span>
-      </div>
-      <h3>Agreements</h3>${ags}
-      ${incoming ? `<h3>Proposals for you</h3>${incoming}` : ''}`;
-  }
-
-  diplomacyHtml() {
-    const { cw } = this;
-    const me = cw.me;
-    const rows = cw.snap.kingdoms.filter((k) => k.id !== cw.you).map((k) => {
-      const rel = me.relations?.[k.id] || 'peace';
-      return `<div class="item"><span class="name" style="color:${k.color}">${esc(k.name)}${k.ai ? ` <span class="small muted">(${k.personality} AI)</span>` : ''}${k.alive ? '' : ' <span class="tag">fallen</span>'}</span><span class="tag ${rel === 'war' ? 'bad' : 'good'}">${rel}</span>
-        <span class="small muted">pop ${k.stats?.pop ?? '?'} · soldiers ${k.stats?.soldiers ?? '?'} · towns ${k.stats?.settlements ?? '?'} · score ${k.score}</span>
-        <span>${!k.alive ? '' : rel === 'war' ? `<button class="btn small" data-act="peace" data-to="${k.id}">Offer peace</button>` : `<button class="btn small primary" data-act="war" data-to="${k.id}">Declare war</button>`}</span>
-        ${k.alive && rel !== 'war' ? `<span class="desc propose">Trade: give <input data-f="gn-${k.id}" type="number" inputmode="numeric" value="${esc(this.fv(`gn-${k.id}`, 20))}" aria-label="Amount to give"><select data-f="give-${k.id}">${RES_KEYS.map((r) => `<option ${r === this.fv(`give-${k.id}`, 'food') ? 'selected' : ''}>${r}</option>`).join('')}</select> for <input data-f="tn-${k.id}" type="number" inputmode="numeric" value="${esc(this.fv(`tn-${k.id}`, 20))}" aria-label="Amount to get"><select data-f="get-${k.id}">${RES_KEYS.map((r) => `<option ${r === this.fv(`get-${k.id}`, 'wood') ? 'selected' : ''}>${r}</option>`).join('')}</select> ×10, every 30s <button class="btn small" data-act="propose" data-to="${k.id}">Propose</button></span>` : ''}</div>`;
-    }).join('');
-    const peace = (cw.snap.proposals || []).filter((p) => p.peace && p.to === cw.you).map((p) => `<div class="item"><span>${esc(cw.kingdom(p.from)?.name)} offers peace</span><span><button class="btn small go" data-act="answer-peace" data-id="${p.id}" data-accept="1">Accept</button> <button class="btn small" data-act="answer-peace" data-id="${p.id}" data-accept="0">Refuse</button></span></div>`).join('');
-    return `${peace ? `<h3>Peace offers</h3>${peace}` : ''}<h3>Kingdoms</h3><div class="list">${rows}</div>
-      <div class="small muted">At peace, borders are closed to armies. War opens them, stops agreements and lets armies seize caravans. Victory: conquer every rival, hold two thirds of all towns and 60% of all people for ${RULES.dominationHold / 60} minutes, or build the Grand Exchange in a city and hold it for ${RULES.wonderHold / 60} minutes. Otherwise the best score wins when time runs out.</div>`;
-  }
-
-  chronicleHtml() {
-    const evs = this.cw.events.slice(-120).reverse();
-    return `${evs.map((e) => `<div class="small" ${e.x != null ? `data-act="goto-xy" data-x="${e.x}" data-y="${e.y}" style="cursor:pointer"` : ''}><span class="muted">${clock(e.t)}</span> ${esc(e.text)}</div>`).join('') || '<div class="muted">Nothing yet.</div>'}`;
-  }
-
-  // -------------------------------------------------------------------------
-  // Placement
-
-  renderPlacement(snap) {
-    const { el, cw } = this;
-    if (el.placement.hidden) {
-      el.placement.hidden = false;
-      el.placement.innerHTML = `<div class="head" data-grip><span class="grip" aria-hidden="true"></span><h2>Found your realm</h2><div class="sub muted small">Choose where to build your capital. Every site trades one strength for another. ${this.tapWord} the map to survey any spot.</div></div><div class="scroll"></div>`;
-      this.applyPanels();
-    }
-    const body = el.placement.querySelector('.scroll');
-    if (body.contains(document.activeElement)) return;
-    if (this.pressing && el.placement.contains(this.pressing)) return;
-    const sites = cw.init.startSites.map((s, k) => `<div class="site ${this.placingSite && this.placingSite.x === s.x && this.placingSite.y === s.y ? 'on' : ''}" data-act="site" data-k="${k}"><div class="title">${esc(s.title)}</div><div class="small">${esc(s.blurb)}</div><div>${s.pros.map((p) => `<span class="tag good">${esc(p)}</span>`).join('')}${s.cons.map((p) => `<span class="tag bad">${esc(p)}</span>`).join('')}</div></div>`).join('');
-    const p = this.placingSite;
-    let survey = '';
-    if (p) {
-      const err = this.placementError(p.x, p.y);
-      const a = analyzeSite(cw.world, p.x, p.y);
-      const d = describeSite(a);
-      const biome = BIOMES[cw.world.biome[p.y * cw.W + p.x]].name;
-      survey = `<div class="survey"><div class="row"><b>${esc(d.title)}</b><span class="small muted">${esc(biome)} · ${p.x}, ${p.y}</span></div><div>${d.pros.map((x) => `<span class="tag good">${esc(x)}</span>`).join('')}${d.cons.map((x) => `<span class="tag bad">${esc(x)}</span>`).join('')}</div>
-        ${err ? `<div class="bad small">${esc(err)}</div>` : ''}
-        <div class="btns"><button class="btn primary" style="flex:1" data-act="place" ${err ? 'disabled' : ''}>Found the capital here</button></div></div>`;
-    }
-    const taken = snap.kingdoms.filter((k) => k.placed).length;
-    const html = `${survey}<h3>Suggested sites</h3>${sites}<div class="small muted">${taken} of ${snap.kingdoms.length} realms placed${this.single ? '. Rivals choose after you.' : '.'}</div>`;
-    if (html !== this.lastPlacement) {
-      body.innerHTML = html;
-      this.lastPlacement = html;
-    }
-  }
-
-  placementError(x, y) {
-    const cw = this.cw;
-    if (!canFoundAt(cw.world, x, y)) return 'Cannot settle on that terrain.';
-    for (const s of cw.snap?.settlements || []) {
-      const d = Math.hypot(s.x - x, s.y - y);
-      if (s.hub && d < 26) return 'Too close to a free city.';
-      if (!s.hub && d < 20) return 'Too close to another kingdom.';
-    }
-    const a = analyzeSite(cw.world, x, y, { r: 7 });
-    if (a.buildable < 50) return 'Not enough buildable land for a capital.';
     return null;
   }
 
-  // -------------------------------------------------------------------------
-  // Action modes
+  // Map actions ------------------------------------------------------------------
 
   setMode(mode) {
-    this.mode = mode;
-    this.r.mode = mode;
+    this.mode = mode === this.mode ? null : mode;
+    for (const b of this.el.build.querySelectorAll('[data-build]')) b.classList.toggle('on', b.dataset.build === this.mode);
     this.r.preview = null;
-    this.pendingTap = null;
-    this.r.canvas.classList.toggle('targeting', !!mode);
-    this.el.tip.hidden = true;
-    this.applyPanels();
-    this.renderHint();
+    this.r.canvas.classList.toggle('targeting', !!this.mode);
+    if (this.mode) {
+      const d = STRUCTURES[this.mode];
+      this.el.hint.innerHTML = `<span>${this.mode === 'port' ? 'Tap your coast' : 'Tap your land'} to place a ${esc(d.name.toLowerCase())}</span><button class="btn small" data-hint="cancel">Cancel</button>`;
+      this.el.hint.hidden = false;
+    } else this.el.hint.hidden = true;
   }
 
-  /** The prompt shown while choosing a target; on touch screens it also confirms. */
-  renderHint() {
-    const { el } = this;
-    const m = this.mode;
-    if (!m) {
-      el.hint.hidden = true;
-      return;
-    }
-    const tap = this.tapWord;
-    const ask = {
-      found: `${tap} the land where settlers should found an outpost.`,
-      road: `${tap} the settlement or free city the road should reach.`,
-      move: `${tap} where the army should march.`,
-    }[m.kind];
-    const confirm = { found: 'Send settlers', road: 'Build the road', move: 'March' }[m.kind];
-    const p = this.pendingTap;
-    const text = p ? p.html : `${ask}${this.touch ? ' You can check the spot before confirming.' : ' Esc cancels.'}`;
-    el.hint.innerHTML = `<div class="hint-text">${text}</div><div class="hint-btns">${p ? `<button class="btn go" data-hint="confirm" ${p.ok ? '' : 'disabled'}>${confirm}</button>` : ''}<button class="btn" data-hint="cancel">Cancel</button></div>`;
-    el.hint.hidden = false;
-  }
-
-  /** Carry out the active map order at tile t. */
-  runMode(t) {
-    const cw = this.cw;
-    const m = this.mode;
+  /** A tap or click on the map. */
+  tapTile(t) {
+    const snap = this.cw.snap;
+    if (!snap) return;
     const x = Math.floor(t.x);
     const y = Math.floor(t.y);
-    if (m.kind === 'found') this.send({ type: 'found', sid: m.sid, x, y });
-    else if (m.kind === 'road') {
-      const s = cw.settlementAt(t.x, t.y);
-      if (!s) return;
-      this.send({ type: 'road', a: m.sid, b: s.id });
-    } else if (m.kind === 'move') this.moveArmyTo(m.aid, t);
-    this.setMode(null);
+    this.closePopup();
+    const me = this.cw.me;
+    if (snap.phase === 'placement') {
+      if (!me || me.spawned) return;
+      this.spawnPick = { x, y, err: this.spawnError(x, y) };
+      this.r.preview = { x, y, ok: !this.spawnPick.err, radius: RULES.spawnRadius };
+      this.renderPlacement();
+      return;
+    }
+    if (snap.phase !== 'running' || !me || !me.alive) return;
+    if (this.mode) {
+      this.send({ type: 'build', kind: this.mode, x, y });
+      this.r.ping(x, y, '#9cff8a');
+      this.setMode(null);
+      return;
+    }
+    const o = this.cw.ownerAt(x, y);
+    if (o === this.cw.you) {
+      const s = this.cw.structureAt(t.x, t.y, 3);
+      if (s && s.owner === this.cw.you) this.openPopup(t, x, y);
+      return;
+    }
+    if (o >= 0 && this.cw.allied(this.cw.you, o)) {
+      this.openPopup(t, x, y);
+      return;
+    }
+    // Land attacks go over the border; anything across the water goes by boat (the server decides).
+    this.send({ type: this.cw.isLand(x, y) ? 'attack' : 'boat', x, y, ratio: this.ratio });
+    this.r.ping(x, y, o >= 0 ? '#ff9a7a' : '#fff3c4');
   }
 
-  hoverTile(t) {
+  /** Long press or right click: a small menu for that spot. */
+  openPopup(t, x, y) {
+    this.popupAt = { sx: t.sx, sy: t.sy, x, y };
+    this.refreshPopup(true);
+  }
+
+  closePopup() {
+    this.popupAt = null;
+    this.el.popup.hidden = true;
+    this.r.highlight = null;
+  }
+
+  refreshPopup(first = false) {
+    const at = this.popupAt;
     const cw = this.cw;
-    const x = Math.floor(t.x);
-    const y = Math.floor(t.y);
-    this.r.hoverTile = { x, y };
-    const m = this.mode;
-    if (!m) return null;
-    if (m.kind === 'found') {
-      const src = cw.settlement(m.sid);
-      let err = null;
-      if (!canFoundAt(cw.world, x, y)) err = 'Unsuitable terrain';
-      else {
-        const k = cw.ownerK[y * cw.W + x];
-        if (k >= 0 && k !== cw.you) err = 'Another kingdom’s land';
-        for (const s of cw.snap.settlements) if (Math.hypot(s.x - x, s.y - y) < (s.hub ? 14 : RULES.minSettlementGap)) err = `Too close to ${s.name}`;
-      }
-      this.r.preview = { x, y, ok: !err, radius: STAGES[0].radius, line: src };
-      if (err) return `<b class="bad">${esc(err)}</b>`;
-      const a = analyzeSite(cw.world, x, y, { r: 7 });
-      const d = describeSite(a);
-      return `<b>${esc(d.title)}</b><br>${d.pros.map((p) => `<span class="tag good">${esc(p)}</span>`).join('')}${d.cons.map((p) => `<span class="tag bad">${esc(p)}</span>`).join('')}<br><span class="small muted">Distance ${Math.round(Math.hypot(src.x - x, src.y - y))} tiles from ${esc(src.name)}</span>`;
-    }
-    if (m.kind === 'road') {
-      const s = cw.settlementAt(t.x, t.y);
-      const src = cw.settlement(m.sid);
-      this.r.preview = { x, y, ok: !!s && s.id !== m.sid && (s.kingdom === cw.you || s.hub), line: src };
-      return s ? `Road from ${esc(src.name)} to <b>${esc(s.name)}</b> (${Math.round(Math.hypot(s.x - src.x, s.y - src.y))} tiles as the crow flies). Bridges cost stone.` : 'Choose a settlement';
-    }
-    if (m.kind === 'move') {
-      const from = cw.army(m.aid);
-      this.r.preview = { x, y, ok: true, line: from };
-      return null;
-    }
-    return null;
-  }
-
-  clickTile(t, button = 0, touch = false) {
-    const cw = this.cw;
-    const x = Math.floor(t.x);
-    const y = Math.floor(t.y);
-    if (cw.snap?.phase === 'placement' && cw.me && !cw.me.placed) {
-      this.placingSite = { x, y };
-      this.r.preview = { x, y, ok: !this.placementError(x, y), radius: STAGES[1].radius };
-      this.renderPlacement(cw.snap);
-      this.ensureVisible(x, y);
-      return;
-    }
-    const m = this.mode;
-    if (m) {
-      if (!touch) return this.runMode(t);
-      // Touch: the first tap shows what would happen, a second tap (or Confirm) does it.
-      const same = this.pendingTap && this.pendingTap.x === x && this.pendingTap.y === y;
-      if (same && this.pendingTap.ok) return this.runMode(t);
-      const info = this.hoverTile(t);
-      const ok = this.r.preview ? this.r.preview.ok !== false : true;
-      const fallback = { move: `March to ${x}, ${y}.`, road: 'Choose a settlement or free city.', found: '' }[m.kind];
-      this.pendingTap = { x, y, t, ok: m.kind === 'road' ? ok && !!cw.settlementAt(t.x, t.y) : ok, html: info || fallback };
-      this.renderHint();
-      return;
-    }
-    if (button === 2) {
-      const sel = this.r.selection;
-      if (sel && sel.type === 'army' && cw.army(sel.id)?.kid === cw.you) this.moveArmyTo(sel.id, t);
-      return;
-    }
-    const a = cw.armyAt(t.x - 0.5, t.y - 0.5);
-    if (a) {
-      this.select({ type: 'army', id: a.id });
-      requestAnimationFrame(() => this.ensureVisible(a.x, a.y));
-      return;
-    }
-    const s = cw.settlementAt(t.x, t.y);
-    if (s) {
-      this.select({ type: 'settlement', id: s.id });
-      requestAnimationFrame(() => this.ensureVisible(s.x, s.y));
-      return;
-    }
-    this.select(null);
-    // On a phone, tapping open ground clears the screen for the map.
-    if (this.compact && this.sheet) {
-      this.sheet = null;
-      this.applyPanels();
-    }
-  }
-
-  /** Touch long-press: march the selected army there, like a right-click. */
-  longPress(t) {
-    const cw = this.cw;
-    if (this.mode || cw.snap?.phase !== 'running') return;
-    const sel = this.r.selection;
-    if (sel && sel.type === 'army' && cw.army(sel.id)?.kid === cw.you) {
-      navigator.vibrate?.(12);
-      this.moveArmyTo(sel.id, t);
-      this.toast('The army marches.', 'info');
-    }
-  }
-
-  moveArmyTo(aid, t) {
-    const s = this.cw.settlementAt(t.x, t.y);
-    const x = s ? s.x : Math.floor(t.x);
-    const y = s ? s.y : Math.floor(t.y);
-    this.send({ type: 'move', aid, x, y });
-  }
-
-  // -------------------------------------------------------------------------
-  // Wiring
-
-  bindPanels() {
-    const { el } = this;
-    const on = (target, ev, fn) => {
-      target.addEventListener(ev, fn);
-      (this.listeners ||= []).push([target, [ev, fn]]);
-    };
-    on(el.left, 'click', (e) => this.panelClick(e, el.left));
-    on(el.tabBody, 'click', (e) => this.panelClick(e, el.tabBody));
-    on(el.placement, 'click', (e) => this.panelClick(e, el.placement));
-    on(el.tabs, 'click', (e) => {
-      const b = e.target.closest('button');
-      if (!b) return;
-      this.tab = b.dataset.tab;
-      this.renderTab();
-    });
-    on(el.speed, 'click', (e) => {
-      const b = e.target.closest('button');
-      if (b) this.setSpeed(Number(b.dataset.speed));
-    });
-    on(el.mini, 'click', (e) => {
-      const rect = el.mini.getBoundingClientRect();
-      this.r.centerOn(((e.clientX - rect.left) / rect.width) * this.cw.W, ((e.clientY - rect.top) / rect.height) * this.cw.H);
-    });
-    on(document.getElementById('btn-menu'), 'click', () => this.onQuit('menu'));
-    on(document.body, 'mousemove', (e) => {
-      const tipEl = e.target.closest?.('[data-tip]');
-      if (tipEl && !e.target.closest('#view')) this.showTip(tipEl.dataset.tip, e.clientX, e.clientY, false);
-      else if (!e.target.closest?.('#view')) this.el.tip.hidden = true;
-    });
-    // Touch screens have no hover: a tap on a resource shows its details briefly.
-    on(document.body, 'click', (e) => {
-      if (!this.touch) return;
-      const tipEl = e.target.closest?.('[data-tip]');
-      if (!tipEl) return;
-      const r = tipEl.getBoundingClientRect();
-      this.showTip(tipEl.dataset.tip, r.left, r.bottom + 6, false, 0);
-      clearTimeout(this.tipTimer);
-      this.tipTimer = setTimeout(() => {
-        this.el.tip.hidden = true;
-      }, 2600);
-    });
-    on(el.dock, 'click', (e) => {
-      const b = e.target.closest('[data-dock]');
-      if (b) this.dockTap(b.dataset.dock);
-    });
-    on(el.right, 'click', (e) => {
-      if (!e.target.closest('[data-sheet-close]')) return;
-      this.sheet = null;
-      this.applyPanels();
-    });
-    on(el.hint, 'click', (e) => {
-      const b = e.target.closest('[data-hint]');
-      if (!b || b.disabled) return;
-      if (b.dataset.hint === 'cancel') this.setMode(null);
-      else if (this.pendingTap) this.runMode(this.pendingTap.t);
-    });
-    // Sections remember whether they are open.
-    for (const root of [el.left, el.tabBody]) {
-      on(root, 'toggle', (e) => {
-        const k = e.target.dataset?.sec;
-        if (!k || this.secOpen[k] === e.target.open) return;
-        this.secOpen[k] = e.target.open;
-        try {
-          localStorage.setItem('realmwright:sections', JSON.stringify(this.secOpen));
-        } catch {
-          // storage unavailable: the choice lasts for this session
+    if (!at || !cw.snap) return;
+    const { x, y } = at;
+    const you = cw.you;
+    const o = cw.ownerAt(x, y);
+    const p = cw.player(o);
+    const me = cw.me;
+    const running = cw.snap.phase === 'running' && me?.alive;
+    const parts = [];
+    if (p) {
+      const al = cw.alliance(you, o);
+      const req = cw.snap.requests.find((r) => r.from === you && r.to === o);
+      const theirs = cw.snap.requests.find((r) => r.from === o && r.to === you);
+      parts.push(`<div class="ph"><span class="dot" style="background:${p.color}"></span><b>${esc(p.name)}</b>${p.ai ? ` <span class="muted">${esc(p.personality || 'AI')}</span>` : ''}</div>`);
+      parts.push(`<div class="pr"><span>${pct(p.tiles / Math.max(1, cw.init.landTotal))} land</span><span>${fmt(p.troops)} troops</span>${al ? `<span class="good">ally ${Math.ceil(Math.max(0, al.until - cw.snap.time))} s</span>` : ''}${p.traitor ? '<span class="bad">traitor</span>' : ''}</div>`);
+      if (o !== you && running && p.alive) {
+        const btns = [];
+        if (!al) btns.push(`<button class="btn small" data-pop="attack">Attack ${fmt(me.troops * this.ratio)}</button>`);
+        if (!al) btns.push('<button class="btn small" data-pop="boat">⛵ Boat</button>');
+        if (theirs) btns.push(`<button class="btn small go" data-answer="${theirs.id}" data-yes="1">Accept alliance</button>`);
+        else if (!al) btns.push(`<button class="btn small go" data-pop="ally" ${req ? 'disabled' : ''}>${req ? 'Asked…' : 'Ask alliance'}</button>`);
+        else {
+          if (al.until - cw.snap.time < 60) btns.push(`<button class="btn small go" data-pop="ally" ${req ? 'disabled' : ''}>Renew</button>`);
+          btns.push('<button class="btn small primary" data-pop="break">Break alliance</button>');
         }
-      });
-    }
-    // Form values survive redraws.
-    for (const root of [el.left, el.tabBody]) {
-      const keep = (e) => {
-        const d = e.target.dataset || {};
-        if (d.f) this.formVals[d.f] = e.target.value;
-        if (d.n) this.recruitN[d.n] = Math.max(1, Math.min(10, Number(e.target.value) || 1));
-        if (d.f === 'side') {
-          this.lastPanel = 0;
-          setTimeout(() => this.renderTab(), 0);
-        }
-      };
-      on(root, 'input', keep);
-      on(root, 'change', keep);
-    }
-    // Remember which element a finger or mouse is pressing, so redraws wait for the click.
-    for (const panel of [el.left, el.right, el.placement]) {
-      on(panel, 'pointerdown', (e) => {
-        this.pressing = e.target;
-      });
-    }
-    const unpress = () => setTimeout(() => {
-      this.pressing = null;
-    }, 0);
-    on(window, 'pointerup', unpress);
-    on(window, 'pointercancel', unpress);
-    // Sheet handles: drag up to expand, down to shrink or close, tap to toggle.
-    for (const panel of [el.left, el.right, el.placement]) {
-      on(panel, 'pointerdown', (e) => {
-        if (!this.compact || !e.target.closest('[data-grip]') || e.target.closest('button')) return;
-        if (window.matchMedia('(max-height: 500px) and (orientation: landscape)').matches) return;
-        this.grip = { y: e.clientY, panel };
-      });
-    }
-    on(window, 'pointerup', (e) => {
-      const g = this.grip;
-      this.grip = null;
-      if (!g) return;
-      const dy = e.clientY - g.y;
-      if (Math.abs(dy) < 8) this.full = !this.full;
-      else if (dy < -40) this.full = true;
-      else if (dy > 40) {
-        if (this.full) this.full = false;
-        else if (g.panel === el.left) this.select(null);
-        else if (g.panel === el.right) this.sheet = null;
+        parts.push(`<div class="pbtns">${btns.join('')}</div>`);
       }
-      this.applyPanels();
-    });
+    } else if (cw.isLand(x, y)) {
+      parts.push('<div class="ph"><b>Unclaimed land</b></div>');
+      if (running) parts.push(`<div class="pbtns"><button class="btn small" data-pop="attack">Claim ${fmt(me.troops * this.ratio)}</button><button class="btn small" data-pop="boat">⛵ Boat</button></div>`);
+    } else {
+      parts.push('<div class="ph"><b>Open water</b></div>');
+      if (running) parts.push('<div class="pbtns"><button class="btn small" data-pop="boat">⛵ Land troops nearby</button></div>');
+    }
+    // Your own buildings and land.
+    const s = cw.structureAt(x + 0.5, y + 0.5, 3);
+    if (s && s.owner === you) {
+      const lvl = s.kind === 'town' ? ` · ${TOWN_LEVELS[s.level].name}` : '';
+      parts.push(`<div class="ps"><b>${esc(s.name)}</b> <span class="muted">${esc(STRUCTURES[s.kind].name)}${lvl}</span></div>`);
+      if (s.kind === 'town' && s.level < MAX_TOWN_LEVEL && running) parts.push(`<div class="pbtns"><button class="btn small go" data-pop="grow" data-sid="${s.id}" ${me.gold < s.upgrade ? 'disabled' : ''}>Grow to ${TOWN_LEVELS[s.level + 1].name.toLowerCase()} · ${fmt(s.upgrade)} gold</button></div>`);
+    } else if (o === you && running) {
+      const btns = Object.keys(STRUCTURES).map((k) => `<button class="btn small" data-pop="build" data-kind="${k}" ${me.gold < me.costs[k] ? 'disabled' : ''}><img src="${icon(BUILD_ICON[k])}" alt=""> ${esc(STRUCTURES[k].name)} ${fmt(me.costs[k])}</button>`);
+      parts.push(`<div class="pbtns">${btns.join('')}</div>`);
+    }
+    const html = parts.join('');
+    const el = this.el.popup;
+    if (html !== this.popupHtml) {
+      this.popupHtml = html;
+      el.innerHTML = html;
+    }
+    this.r.highlight = o >= 0 && o !== you ? o : null;
+    if (first) {
+      el.hidden = false;
+      // Next to the finger, inside the screen.
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const left = Math.max(8, Math.min(window.innerWidth - w - 8, at.sx - w / 2));
+      const top = at.sy - h - 18 > 60 ? at.sy - h - 18 : Math.min(window.innerHeight - h - 8, at.sy + 18);
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+    }
   }
+
+  popupAction(b) {
+    const at = this.popupAt;
+    if (!at) return;
+    const { x, y } = at;
+    const o = this.cw.ownerAt(x, y);
+    const act = b.dataset.pop;
+    if (act === 'attack') {
+      this.send({ type: 'attack', x, y, ratio: this.ratio });
+      this.r.ping(x, y, '#ff9a7a');
+    } else if (act === 'boat') {
+      this.send({ type: 'boat', x, y, ratio: this.ratio });
+      this.r.ping(x, y, '#fff3c4');
+    } else if (act === 'ally') this.send({ type: 'ally', to: o });
+    else if (act === 'break') this.send({ type: 'breakAlliance', to: o });
+    else if (act === 'grow') this.send({ type: 'upgrade', sid: Number(b.dataset.sid) });
+    else if (act === 'build') {
+      this.send({ type: 'build', kind: b.dataset.kind, x, y });
+      this.r.ping(x, y, '#9cff8a');
+    }
+    this.closePopup();
+  }
+
+  // Desktop hover ----------------------------------------------------------------
+
+  hover(e) {
+    const t = this.r.screenToTile(e.clientX, e.clientY);
+    const x = Math.floor(t.x);
+    const y = Math.floor(t.y);
+    if (this.mode) {
+      this.r.preview = { x, y, ok: this.cw.ownerAt(x, y) === this.cw.you, radius: this.mode === 'outpost' ? RULES.outpostRadius : 0 };
+      this.el.tip.hidden = true;
+      return;
+    }
+    const o = this.cw.ownerAt(x, y);
+    const p = this.cw.player(o);
+    const s = this.cw.structureAt(t.x, t.y, 2);
+    let html = '';
+    if (s) html = `<b>${esc(s.name)}</b> · ${esc(STRUCTURES[s.kind].name)}${s.kind === 'town' ? ` (${TOWN_LEVELS[s.level].name})` : ''}<br>`;
+    if (p) html += `<span class="dot" style="background:${p.color}"></span><b>${esc(p.name)}</b> · ${fmt(p.troops)} troops${this.cw.allied(this.cw.you, o) ? ' · ally' : ''}`;
+    else if (this.cw.isLand(x, y)) html += 'Unclaimed land';
+    if (!html) {
+      this.el.tip.hidden = true;
+      return;
+    }
+    const tip = this.el.tip;
+    if (tip.innerHTML !== html) tip.innerHTML = html;
+    tip.hidden = false;
+    tip.style.left = `${Math.min(window.innerWidth - tip.offsetWidth - 8, e.clientX + 16)}px`;
+    tip.style.top = `${Math.min(window.innerHeight - tip.offsetHeight - 8, e.clientY + 16)}px`;
+  }
+
+  // Input ------------------------------------------------------------------
 
   setSpeed(v) {
     if (!this.single) return;
     this.speed = v;
     this.tx.setSpeed(v);
-    if (this.cw.snap) this.renderTop(this.cw.snap);
+    setText(this.el.speed, v === 0 ? '▶' : `${v}×`);
+    this.el.speed.classList.toggle('on', v === 0);
   }
 
-  showTip(html, x, y, isHtml = true, offset = 16) {
-    const tip = this.el.tip;
-    if (!html) {
-      tip.hidden = true;
-      return;
-    }
-    if (isHtml) tip.innerHTML = html;
-    else tip.textContent = html;
-    tip.hidden = false;
-    const w = tip.offsetWidth;
-    const h = tip.offsetHeight;
-    tip.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, x + offset))}px`;
-    tip.style.top = `${Math.max(8, Math.min(window.innerHeight - h - 8, y + offset))}px`;
-  }
-
-  panelClick(e, root) {
-    const b = e.target.closest('[data-act]');
-    if (!b || b.disabled) return;
-    const cw = this.cw;
-    const sel = this.r.selection;
-    const sid = sel && sel.type === 'settlement' ? sel.id : null;
-    const d = b.dataset;
-    const val = (f) => root.querySelector(`[data-f="${f}"]`)?.value;
-    switch (d.act) {
-      case 'close':
-        this.select(null);
-        break;
-      case 'build':
-        this.send({ type: 'build', sid, kind: d.kind });
-        break;
-      case 'cancel':
-        this.send({ type: 'cancel', sid, pid: Number(d.pid) });
-        break;
-      case 'upgrade':
-        this.send({ type: 'upgrade', sid });
-        break;
-      case 'walls':
-        this.send({ type: 'walls', sid });
-        break;
-      case 'recruit': {
-        const n = Number(root.querySelector(`[data-n="${d.unit}"]`)?.value || 1);
-        this.send({ type: 'recruit', sid, unit: d.unit, n });
-        break;
-      }
-      case 'levy':
-        this.send({ type: 'levy', sid });
-        break;
-      case 'army':
-        this.send({ type: 'formArmy', sid });
-        this.toast(this.touch ? 'An army musters outside the town. Tap it, then Move…, to march.' : 'An army musters outside the town. Select it and right-click to march.', 'info');
-        break;
-      case 'demob': {
-        const s = cw.settlement(sid);
-        for (const [u, n] of Object.entries(s.garrison || {})) if (n >= 1) this.send({ type: 'demobilize', sid, unit: u, n: Math.floor(n) });
-        break;
-      }
-      case 'mode-found':
-        this.setMode({ kind: 'found', sid });
-        break;
-      case 'mode-road':
-        this.setMode({ kind: 'road', sid });
-        break;
-      case 'mode-move':
-        this.setMode({ kind: 'move', aid: sel.id });
-        break;
-      case 'garrison':
-        this.send({ type: 'garrison', aid: sel.id });
-        this.select(null);
-        break;
-      case 'prio':
-        this.send({ type: 'priority', cat: d.cat, level: Number(d.level) });
-        if (cw.me) cw.me.priorities[d.cat] = Number(d.level);
-        this.renderTab();
-        break;
-      case 'goto': {
-        const s = cw.settlement(Number(d.sid));
-        if (s) {
-          this.select({ type: 'settlement', id: s.id });
-          this.focusOn(s.x, s.y, Math.max(this.r.cam.ppt, 16));
-        }
-        break;
-      }
-      case 'goto-xy':
-        if (this.compact) {
-          this.sheet = null;
-          this.applyPanels();
-        }
-        this.focusOn(Number(d.x), Number(d.y), Math.max(this.r.cam.ppt, 16));
-        break;
-      case 'add-order':
-        this.send({ type: 'order', side: val('side'), res: val('res'), amount: Number(val('amount')), keep: Number(val('keep')), limit: Number(val('limit')) });
-        break;
-      case 'cancel-order':
-        this.send({ type: 'cancelOrder', oid: Number(d.oid) });
-        break;
-      case 'respond':
-        this.send({ type: 'respond', id: Number(d.id), accept: d.accept === '1' });
-        break;
-      case 'answer-peace':
-        this.send({ type: 'answerPeace', id: Number(d.id), accept: d.accept === '1' });
-        break;
-      case 'war':
-        if (window.confirm(`Declare war on ${cw.kingdom(Number(d.to))?.name}?`)) this.send({ type: 'declareWar', to: Number(d.to) });
-        break;
-      case 'peace':
-        this.send({ type: 'offerPeace', to: Number(d.to) });
-        break;
-      case 'propose': {
-        const k = d.to;
-        this.send({ type: 'propose', to: Number(k), give: { res: val(`give-${k}`), n: Number(val(`gn-${k}`)) }, get: { res: val(`get-${k}`), n: Number(val(`tn-${k}`)) }, every: 30, times: 10 });
-        this.toast('Proposal sent.', 'info');
-        break;
-      }
-      case 'site': {
-        const s = cw.init.startSites[Number(d.k)];
-        this.placingSite = { x: s.x, y: s.y };
-        this.focusOn(s.x, s.y, 8);
-        this.r.preview = { x: s.x, y: s.y, ok: !this.placementError(s.x, s.y), radius: STAGES[1].radius };
-        this.renderPlacement(cw.snap);
-        break;
-      }
-      case 'place':
-        if (this.placingSite) this.send({ type: 'place', x: this.placingSite.x, y: this.placingSite.y });
-        break;
-      default:
-        break;
-    }
-    // Snappier panels after an action.
-    setTimeout(() => {
-      this.lastPanel = 0;
-    }, 60);
+  bindHud() {
+    const el = this.el;
+    this.on(el.ratio, 'input', () => {
+      this.ratio = Number(el.ratio.value) / 100;
+      store.set('ratio', this.ratio);
+      this.updateSliders();
+    });
+    this.on(el.share, 'input', () => {
+      this.shareDrag = true;
+      this.updateSliders();
+    });
+    this.on(el.share, 'change', () => {
+      this.shareDrag = false;
+      this.send({ type: 'troops', share: Number(el.share.value) / 100 });
+    });
+    this.on(el.speed, 'click', () => this.setSpeed({ 1: 2, 2: 4, 4: 0, 0: 1 }[this.speed] ?? 1));
+    this.on(document.getElementById('btn-menu'), 'click', () => this.onQuit('menu'));
+    this.on(document.getElementById('btn-home'), 'click', () => this.home());
+    this.on(el.boardBtn, 'click', () => {
+      this.boardOpen = !this.boardOpen;
+      el.board.hidden = !this.boardOpen;
+      el.boardBtn.classList.toggle('on', this.boardOpen);
+      if (this.boardOpen) this.renderBoard();
+    });
+    this.on(el.board, 'click', (e) => {
+      const b = e.target.closest('[data-player]');
+      if (!b) return;
+      const spot = this.cw.snap?.labels[Number(b.dataset.player)];
+      if (spot) this.r.flyTo(spot[0], spot[1]);
+    });
+    this.on(el.build, 'click', (e) => {
+      const b = e.target.closest('[data-build]');
+      if (b) this.setMode(b.dataset.build);
+    });
+    this.on(el.hint, 'click', (e) => {
+      if (e.target.closest('[data-hint="cancel"]')) this.setMode(null);
+    });
+    const answer = (e) => {
+      const b = e.target.closest('[data-answer]');
+      if (!b) return false;
+      this.send({ type: 'answer', id: Number(b.dataset.answer), accept: !!b.dataset.yes });
+      b.closest('.notice')?.remove();
+      this.noticesHtml = null;
+      return true;
+    };
+    this.on(el.notices, 'click', answer);
+    this.on(el.attacks, 'click', (e) => {
+      const b = e.target.closest('[data-retreat]');
+      if (b) this.send({ type: 'retreat', id: Number(b.dataset.retreat) });
+    });
+    this.on(el.popup, 'click', (e) => {
+      if (answer(e)) return this.closePopup();
+      const b = e.target.closest('[data-pop]');
+      if (b && !b.disabled) this.popupAction(b);
+    });
+    this.on(el.placement, 'click', (e) => {
+      const b = e.target.closest('[data-spawn]');
+      if (!b) return;
+      if (b.dataset.spawn === 'go' && this.spawnPick) this.send({ type: 'place', x: this.spawnPick.x, y: this.spawnPick.y });
+      this.spawnPick = null;
+      this.r.preview = null;
+      this.renderPlacement();
+    });
+    this.on(document.getElementById('minimap'), 'click', (e) => {
+      const rect = e.target.getBoundingClientRect();
+      this.r.flyTo(((e.clientX - rect.left) / rect.width) * this.cw.W, ((e.clientY - rect.top) / rect.height) * this.cw.H);
+    });
   }
 
   bindInput() {
     const canvas = this.r.canvas;
     let drag = null;
-    const on = (target, ev, fn, opts) => {
-      target.addEventListener(ev, fn, opts);
-      (this.listeners ||= []).push([target, [ev, fn], opts]);
-    };
     // Pointers: one finger (or the mouse) pans and taps; two fingers pinch
     // to zoom and pan together; a touch held still is a long-press.
     const pts = new Map();
@@ -1133,48 +607,43 @@ export class GameUI {
       if (drag?.longTimer) clearTimeout(drag.longTimer);
       if (drag) drag.longTimer = null;
     };
-    on(canvas, 'pointerdown', (e) => {
+    this.on(canvas, 'pointerdown', (e) => {
       canvas.setPointerCapture(e.pointerId);
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      this.vel = null;
+      this.r.fly = null;
       if (pts.size === 1) {
-        drag = { x: e.clientX, y: e.clientY, cx: this.r.cam.x, cy: this.r.cam.y, moved: false, button: e.button, touch: e.pointerType === 'touch', long: false };
+        drag = { x: e.clientX, y: e.clientY, cx: this.r.cam.x, cy: this.r.cam.y, moved: false, button: e.button, touch: e.pointerType === 'touch', long: false, track: [[performance.now(), e.clientX, e.clientY]] };
         if (drag.touch) {
-          const at = this.r.screenToTile(e.clientX, e.clientY);
           drag.longTimer = setTimeout(() => {
             if (!drag || drag.moved) return;
             drag.long = true;
-            this.longPress(at);
-          }, 520);
+            const t = this.r.screenToTile(drag.x, drag.y);
+            this.openPopup({ ...t, sx: drag.x, sy: drag.y }, Math.floor(t.x), Math.floor(t.y));
+          }, 480);
         }
       } else if (pts.size === 2) {
         clearLong();
         if (drag) drag.moved = true; // a second finger means no tap
         pinch = twoFinger();
+        this.r.anim = null;
       }
     });
-    on(canvas, 'pointermove', (e) => {
+    this.on(canvas, 'pointermove', (e) => {
       if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pinch && pts.size >= 2) {
         const now = twoFinger();
         this.r.cam.x -= (now.x - pinch.x) / this.r.cam.ppt;
         this.r.cam.y -= (now.y - pinch.y) / this.r.cam.ppt;
-        const ratio = now.d / Math.max(1, pinch.d);
-        if (ratio > 1.3) {
-          this.r.zoomAt(now.x, now.y, 1);
-          pinch.d = now.d;
-        } else if (ratio < 0.77) {
-          this.r.zoomAt(now.x, now.y, -1);
-          pinch.d = now.d;
-        }
-        pinch.x = now.x;
-        pinch.y = now.y;
-        this.r.clampCam();
+        this.r.setPpt(this.r.cam.ppt * (now.d / Math.max(1, pinch.d)), now.x, now.y);
+        pinch = now;
         return;
       }
       if (drag && (drag.button === 0 || drag.button === 1)) {
         const dx = e.clientX - drag.x;
         const dy = e.clientY - drag.y;
         if (Math.abs(dx) + Math.abs(dy) > (drag.touch ? 10 : 5)) {
+          if (!drag.moved) this.closePopup();
           drag.moved = true;
           clearLong();
         }
@@ -1183,77 +652,107 @@ export class GameUI {
           this.r.cam.x = drag.cx - dx / this.r.cam.ppt;
           this.r.cam.y = drag.cy - dy / this.r.cam.ppt;
           this.r.clampCam();
+          drag.track.push([performance.now(), e.clientX, e.clientY]);
+          if (drag.track.length > 6) drag.track.shift();
         }
       }
-      if (e.pointerType !== 'mouse') return; // hover information needs a mouse
-      const t = this.r.screenToTile(e.clientX, e.clientY);
-      const tip = this.hoverTile(t);
-      if (tip) this.showTip(tip, e.clientX, e.clientY);
-      else {
-        const s = this.cw.settlementAt(t.x, t.y);
-        const a = this.cw.armyAt(t.x - 0.5, t.y - 0.5);
-        if (a) this.showTip(`Army of <b>${esc(this.cw.kingdom(a.kid)?.name)}</b>: ${Math.round(a.n)} soldiers`, e.clientX, e.clientY);
-        else if (s && this.r.cam.ppt < 16) this.showTip(`<b>${esc(s.name)}</b> · ${STAGES[s.stage].name} · ${Math.floor(s.pop)} people`, e.clientX, e.clientY);
-        else this.el.tip.hidden = true;
-      }
+      if (e.pointerType === 'mouse' && !drag) this.hover(e);
     });
     const release = (e, cancelled) => {
       pts.delete(e.pointerId);
-      if (pts.size < 2) pinch = null;
+      if (pinch && pts.size < 2) {
+        this.r.settle(pinch.x, pinch.y);
+        pinch = null;
+        // The remaining finger starts a fresh pan.
+        if (pts.size === 1) {
+          const [p] = [...pts.values()];
+          drag = { x: p.x, y: p.y, cx: this.r.cam.x, cy: this.r.cam.y, moved: true, button: 0, touch: true, long: false, track: [] };
+        }
+        return;
+      }
       if (pts.size > 0) return;
       canvas.classList.remove('dragging');
       const d = drag;
       clearLong();
       drag = null;
-      if (cancelled || !d || d.moved || d.long) return;
+      if (!d) return;
+      if (d.moved && !cancelled && d.track.length >= 2) {
+        // Let the map glide on after a flick.
+        const [t0, x0, y0] = d.track[0];
+        const [t1, x1, y1] = d.track[d.track.length - 1];
+        const dt = Math.max(1, t1 - t0);
+        if (performance.now() - t1 < 60 && dt < 160) this.vel = { x: (x1 - x0) / dt, y: (y1 - y0) / dt };
+      }
+      if (cancelled || d.moved || d.long) return;
       const t = this.r.screenToTile(e.clientX, e.clientY);
+      t.sx = e.clientX;
+      t.sy = e.clientY;
+      if (d.button === 2) {
+        this.openPopup(t, Math.floor(t.x), Math.floor(t.y));
+        return;
+      }
       // Double tap zooms in where the finger is.
-      if (d.touch && lastTap && performance.now() - lastTap.at < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30 && !this.mode) {
+      if (d.touch && lastTap && performance.now() - lastTap.at < 300 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30 && !this.mode && this.cw.snap?.phase !== 'placement') {
         lastTap = null;
-        this.r.zoomAt(e.clientX, e.clientY, 1);
+        clearTimeout(this.tapTimer);
+        this.r.zoomStep(1, e.clientX, e.clientY);
+        return;
+      }
+      if (d.touch && this.cw.snap?.phase === 'running' && !this.mode) {
+        // Wait a moment: a second tap means zoom, not attack.
+        lastTap = { at: performance.now(), x: e.clientX, y: e.clientY };
+        clearTimeout(this.tapTimer);
+        this.tapTimer = setTimeout(() => this.tapTile(t), 230);
         return;
       }
       lastTap = d.touch ? { at: performance.now(), x: e.clientX, y: e.clientY } : null;
-      this.clickTile(t, d.button, d.touch);
+      this.tapTile(t);
     };
-    on(canvas, 'pointerup', (e) => release(e, false));
-    on(canvas, 'pointercancel', (e) => release(e, true));
-    on(canvas, 'pointerleave', () => {
+    this.on(canvas, 'pointerup', (e) => release(e, false));
+    this.on(canvas, 'pointercancel', (e) => release(e, true));
+    this.on(canvas, 'pointerleave', () => {
       this.el.tip.hidden = true;
     });
-    on(canvas, 'contextmenu', (e) => e.preventDefault());
-    on(canvas, 'wheel', (e) => {
+    this.on(canvas, 'contextmenu', (e) => e.preventDefault());
+    this.on(canvas, 'wheel', (e) => {
       e.preventDefault();
-      this.r.zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1 : -1);
+      this.vel = null;
+      const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      if (e.ctrlKey || Math.abs(dy) < 40) {
+        // Trackpad pinch and fine scrolling: follow the fingers, then settle.
+        this.r.anim = null;
+        this.r.setPpt(this.r.cam.ppt * Math.exp(-dy * (e.ctrlKey ? 0.012 : 0.004)), e.clientX, e.clientY);
+        clearTimeout(this.wheelTimer);
+        this.wheelTimer = setTimeout(() => this.r.settle(e.clientX, e.clientY), 180);
+      } else this.r.zoomBy(dy < 0 ? 1.5 : 1 / 1.5, e.clientX, e.clientY);
     }, { passive: false });
-    on(window, 'keydown', (e) => {
-      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    this.on(window, 'keydown', (e) => {
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) && document.activeElement.type !== 'range') return;
       const k = e.key.toLowerCase();
       this.keys.add(k);
       if (k === 'escape') {
         if (this.mode) this.setMode(null);
-        else if (this.compact && this.sheet === 'tab') {
-          this.sheet = null;
-          this.applyPanels();
-        }
-        else if (this.r.selection) this.select(null);
+        else if (this.popupAt) this.closePopup();
         else this.onQuit('menu');
       } else if (k === ' ' && this.single) {
         e.preventDefault();
         this.setSpeed(this.speed === 0 ? 1 : 0);
       } else if (k === '1' || k === '2' || k === '3') this.setSpeed([1, 2, 4][Number(k) - 1]);
-      else if (k === '+' || k === '=') this.r.zoomAt(this.r.vw / 2, this.r.vh / 2, 1);
-      else if (k === '-') this.r.zoomAt(this.r.vw / 2, this.r.vh / 2, -1);
-      else if (k === 'h') {
-        const cap = this.cw.me && this.cw.settlement(this.cw.me.capital);
-        if (cap) {
-          this.r.centerOn(cap.x, cap.y, Math.max(16, this.r.cam.ppt));
-          this.select({ type: 'settlement', id: cap.id });
-        }
+      else if (k === '+' || k === '=') this.r.zoomStep(1);
+      else if (k === '-') this.r.zoomStep(-1);
+      else if (k === 'h') this.home();
+      else if (k === 'b') this.setMode('town');
+      else if (k === 'p') this.setMode('port');
+      else if (k === 'o') this.setMode('outpost');
+      else if (k === 'q' || k === 'e') {
+        this.ratio = Math.max(0.05, Math.min(1, Math.round((this.ratio + (k === 'e' ? 0.05 : -0.05)) * 20) / 20));
+        this.el.ratio.value = Math.round(this.ratio * 100);
+        store.set('ratio', this.ratio);
+        this.updateSliders();
       }
     });
-    on(window, 'keyup', (e) => this.keys.delete(e.key.toLowerCase()));
-    on(window, 'resize', () => this.r.resize());
+    this.on(window, 'keyup', (e) => this.keys.delete(e.key.toLowerCase()));
+    this.on(window, 'resize', () => this.r.resize());
   }
 
   /** Called every animation frame. */
@@ -1264,17 +763,24 @@ export class GameUI {
     if (k.has('s') || k.has('arrowdown')) this.r.cam.y += speed;
     if (k.has('a') || k.has('arrowleft')) this.r.cam.x -= speed;
     if (k.has('d') || k.has('arrowright')) this.r.cam.x += speed;
+    if (this.vel) {
+      const ms = dt * 1000;
+      this.r.cam.x -= (this.vel.x * ms) / this.r.cam.ppt;
+      this.r.cam.y -= (this.vel.y * ms) / this.r.cam.ppt;
+      const f = Math.pow(0.9, ms / 16);
+      this.vel.x *= f;
+      this.vel.y *= f;
+      if (Math.hypot(this.vel.x, this.vel.y) < 0.02) this.vel = null;
+    }
     this.r.clampCam();
   }
 
   showEnd(snap) {
     const cw = this.cw;
     const w = snap.winner;
-    const k = cw.kingdom(w.kid);
-    const how = { conquest: 'by conquest', domination: 'by dominating the realm', prosperity: 'by prosperity: the Grand Exchange stood', score: 'by score when time ran out' }[w.how];
-    const rows = [...snap.kingdoms].sort((a, b) => b.score - a.score).map((q) => `<tr><td style="color:${q.color}">${esc(q.name)}</td><td>${q.score}</td><td>${q.stats?.pop ?? ''}</td><td>${q.stats?.settlements ?? ''}</td></tr>`).join('');
+    const p = cw.player(w.kid);
+    const how = { conquest: 'as the last realm standing', domination: `by holding ${Math.round(cw.init.winShare * 100)}% of the land`, time: 'with the most land when time ran out' }[w.how];
     const won = w.kid === cw.you;
-    this.onQuit('end', `<h2>${won ? 'Victory!' : `${esc(k?.name)} prevails`}</h2><p>${esc(k?.name)} wins ${how}.</p><table class="t"><tr><th>Realm</th><th>Score</th><th>People</th><th>Towns</th></tr>${rows}</table>`);
+    this.onQuit('end', `<h2>${won ? 'Victory!' : `${esc(p?.name)} wins`}</h2><p>${esc(p?.name)} wins ${how}.</p>${this.standingsHtml(snap)}`);
   }
 }
-

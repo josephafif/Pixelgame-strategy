@@ -18,7 +18,7 @@ const BIOME_END = {
   beach: ['haven', 'port', 'strand', 'quay'],
 };
 
-const KINGDOMS = ['Aldmark', 'Brightvale', 'Corvane', 'Dunmere', 'Eskerholt', 'Falconreach', 'Greywater', 'Highmoor', 'Ironhold', 'Jadecrown', 'Kestrel', 'Lionsgate', 'Marrowdeep', 'Northwatch', 'Oakenshire', 'Pyrewood', 'Ravenmoor', 'Silverfen', 'Thornwall', 'Wyvernrest'];
+const KINGDOMS = ['Aldmark', 'Brightvale', 'Corvane', 'Dunmere', 'Eskerholt', 'Falconreach', 'Greywater', 'Highmoor', 'Ironhold', 'Jadecrown', 'Kestrel', 'Lionsgate', 'Marrowdeep', 'Northwatch', 'Oakenshire', 'Pyrewood', 'Ravenmoor', 'Silverfen', 'Thornwall', 'Wyvernrest', 'Amberley', 'Blackmere', 'Cindervale', 'Dawnmarch', 'Emberfall', 'Frostholm', 'Goldcrest', 'Hollowind', 'Ivywatch', 'Larkspire', 'Mistral', 'Nettlebay', 'Oldcastle', 'Redwyn', 'Stormhaven', 'Westerly'];
 
 export function placeName(seed, salt, biomeKey) {
   const rng = new Rng((seed ^ Math.imul(salt + 1, 0x9e3779b1)) >>> 0);

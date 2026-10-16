@@ -316,6 +316,33 @@ export function boatSprite(v = 0) {
   });
 }
 
+/** A boat at sea, facing right: a troop boat under the owner's sail, or a trading cog. */
+export function shipSprite(kind, color) {
+  return cached(`ship:${kind}:${color}`, () => {
+    if (kind === 'trade') {
+      const p = new Pix(22, 18);
+      p.rect(3, 12, 16, 3, '#7a5632');
+      p.hline(2, 19, 11, '#b48b5a');
+      p.hline(5, 17, 15, '#5a3e24');
+      p.rect(16, 9, 4, 3, '#8f6a3e');
+      p.vline(10, 1, 11, '#5a3e24');
+      p.rect(5, 2, 10, 7, '#f0ece0');
+      for (let y = 3; y < 9; y += 2) p.hline(5, 14, y, shade(color, -0.1));
+      p.set(10, 0, color);
+      p.outline(OUT);
+      return p;
+    }
+    const p = new Pix(18, 15);
+    p.ellipse(9, 11, 7.5, 2.6, (dx, dy) => (dy < -0.2 ? '#b48b5a' : '#7a5632'));
+    p.hline(4, 14, 10, '#8f6a3e');
+    p.vline(8, 1, 10, '#5a3e24');
+    for (let y = 2; y < 9; y++) p.hline(9, 9 + Math.max(1, Math.round((y - 1) * 0.8)), y, y < 5 ? color : shade(color, -0.2));
+    p.set(8, 0, '#f0ece0');
+    p.outline(OUT);
+    return p;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Units
 

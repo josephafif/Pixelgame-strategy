@@ -1,480 +1,423 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Match } from '../engine/sim/match.js';
-import { TICK, UNITS, RULES, WALLS, RES_KEYS, BUILDINGS, LABOR } from '../engine/sim/defs.js';
-import { snapshot } from '../engine/net/protocol.js';
-import { canFoundAt } from '../engine/world/sites.js';
-import { B } from '../engine/world/biomes.js';
-import { priceOf } from '../engine/sim/trade.js';
+import { TICK, RULES, TOWN_LEVELS, structureCost } from '../engine/sim/defs.js';
+import { tileCost } from '../engine/sim/attack.js';
+import { create as createStructure } from '../engine/sim/structures.js';
+import { PlayerView, applyDelta, unrle } from '../engine/net/protocol.js';
 import { validateLayout } from '../engine/settlement/validate.js';
 import { generateWorld, WORLD_SIZES } from '../engine/world/worldgen.js';
+import { B } from '../engine/world/biomes.js';
 
 const WORLD = generateWorld({ seed: 21, ...WORLD_SIZES.small });
-
-/** Two human kingdoms placed on the first two suggested sites. */
-function twoKingdoms(opts = {}) {
-  const m = new Match({ seed: 21, size: 'small', world: WORLD, placementTime: 0, players: [{ name: 'Aster' }, { name: 'Brann' }], ...opts });
-  const sites = m.startSites.filter((s) => !m.placementError(s.x, s.y));
-  assert.ok(m.exec(0, { type: 'place', x: sites[0].x, y: sites[0].y }).ok);
-  const far = sites.find((s) => Math.hypot(s.x - sites[0].x, s.y - sites[0].y) > 30 && !m.placementError(s.x, s.y));
-  assert.ok(m.exec(1, { type: 'place', x: far.x, y: far.y }).ok);
-  m.step();
-  assert.equal(m.state.phase, 'running');
-  return m;
-}
 
 function run(m, seconds) {
   for (let i = 0; i < Math.round(seconds / TICK); i++) m.step();
 }
 
-const cap = (m, kid) => m.settlement(m.state.kingdoms[kid].capital);
-
-test('placement founds a capital with houses, farms and a garrison', () => {
-  const m = twoKingdoms();
-  const c = cap(m, 0);
-  assert.ok(c.capital && c.stage === 1);
-  assert.ok(c.buildings.farm >= 1 && c.buildings.lumber >= 1);
-  assert.ok(c.housing > c.pop * 0.9);
-  assert.ok(c.garrison.inf > 0);
-  assert.ok(validateLayout(m.world, m.layouts.get(c.id)).ok);
-  assert.ok(m.exec(0, { type: 'place', x: 10, y: 10 }).error, 'cannot place twice');
-});
-
-test('population grows with food and housing, and is capped by housing', () => {
-  const m = twoKingdoms();
-  const c = cap(m, 0);
-  const p0 = c.pop;
-  m.state.kingdoms[0].stock.food = 2000;
-  m.state.kingdoms[0].stock.wood = 0; // no new houses
-  run(m, 90);
-  assert.ok(c.pop > p0, `grew ${p0} -> ${c.pop}`);
-  assert.ok(c.pop <= c.housing + 0.6, 'never beyond housing');
-});
-
-test('starvation shrinks the population and pulls workers onto the farms', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  k.priorities.food = 1;
-  k.priorities.wood = 3;
-  k.stock.food = 0;
-  run(m, 2);
-  const p0 = c.pop;
-  run(m, 20);
-  assert.ok(k.flags.starving || c.pop < p0);
-  assert.ok(c.pop < p0, 'population fell');
-  // Even with food set to low priority, a starving kingdom fills its farm jobs first.
-  assert.equal(c.jobs.assigned.food, c.jobs.slots.food);
-});
-
-test('labour priorities move workers between jobs', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  k.stock.food = 1000;
-  c.pop = 20; // too few workers for every job
-  k.priorities.food = 3;
-  k.priorities.wood = 1;
-  run(m, 1.5);
-  const foodFirst = c.jobs.assigned.food;
-  const woodFirst = c.jobs.assigned.wood;
-  k.priorities.food = 1;
-  k.priorities.wood = 3;
-  run(m, 1.5);
-  assert.ok(c.jobs.assigned.wood > woodFirst, 'more woodcutters');
-  assert.ok(c.jobs.assigned.food < foodFirst, 'fewer farmers');
-});
-
-test('recruiting needs barracks, equipment and capacity, and takes time', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 4 }).error, /barracks/);
-  c.buildings.barracks = 1;
-  k.stock.iron = 2;
-  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 4 }).error, /equipment/);
-  k.stock.iron = 100;
-  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 11 }).error, /train 10 at once/);
-  const pop0 = c.pop;
-  const inf0 = c.garrison.inf;
-  assert.ok(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 8 }).ok);
-  assert.equal(k.stock.iron, 92);
-  assert.ok(Math.abs(c.pop - (pop0 - 8)) < 1e-9, 'recruits leave the workforce at once');
-  run(m, UNITS.inf.train - 2);
-  assert.equal(c.garrison.inf, inf0, 'still training');
-  run(m, 3);
-  assert.equal(c.garrison.inf, inf0 + 8, 'trained');
-  // Archers need only wood; siege engines need a town.
-  k.stock.wood = 100;
-  assert.ok(m.exec(0, { type: 'recruit', sid: c.id, unit: 'arch', n: 2 }).ok);
-  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'siege', n: 1 }).error, /towns and cities/);
-  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'cav', n: 1 }).error, /Unknown unit/);
-});
-
-test('drafting workers reduces production', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  k.stock.food = 1000;
-  c.buildings.farm = 6;
-  c.pop = 40;
-  c.housing = 40;
-  run(m, 1.5);
-  const before = c.out.food || 0;
-  c.buildings.barracks = 1;
-  k.stock.iron = 100;
-  m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 10 });
-  m.exec(0, { type: 'levy', sid: c.id });
-  run(m, 1.5);
-  assert.ok((c.out.food || 0) < before, `food output ${before} -> ${c.out.food}`);
-});
-
-test('soldiers cost upkeep, and unpaid troops desert', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  c.garrison.inf = 60;
-  k.coin = 0;
-  k.stock.food = 1000;
-  run(m, 30);
-  assert.ok(k.flags.unpaid, 'cannot pay');
-  assert.ok(c.garrison.inf < 60, `deserted to ${c.garrison.inf}`);
-});
-
-test('militia levies are capped and fast; demobilising takes time', () => {
-  const m = twoKingdoms();
-  const c = cap(m, 0);
-  c.pop = 100;
-  c.housing = 400;
-  m.state.kingdoms[0].stock.food = 2000;
-  m.state.kingdoms[0].stock.wood = 0;
-  const r = m.exec(0, { type: 'levy', sid: c.id });
-  assert.ok(r.ok && r.n <= Math.floor(100 * RULES.levyMax));
-  assert.ok(m.exec(0, { type: 'levy', sid: c.id }).error, 'no second levy beyond the cap');
-  run(m, UNITS.militia.train + 0.5);
-  assert.ok(c.garrison.militia >= r.n);
-  const pop0 = c.pop;
-  assert.ok(m.exec(0, { type: 'demobilize', sid: c.id, unit: 'militia', n: r.n }).ok);
-  run(m, RULES.demobilizeTime / 2);
-  assert.ok(c.pop < pop0 + r.n * 0.5 + 2, 'not back yet');
-  run(m, RULES.demobilizeTime);
-  assert.ok(c.pop > pop0 + r.n * 0.5, 'returned to work');
-});
-
-test('expansion needs exploration, resources and travel; outposts start small', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  c.pop = 60;
-  // Find a valid target 14–24 tiles away.
-  let target = null;
-  for (let r = 14; r < 26 && !target; r++) {
-    for (let a = 0; a < 32 && !target; a++) {
-      const x = Math.round(c.x + Math.cos((a / 32) * Math.PI * 2) * r);
-      const y = Math.round(c.y + Math.sin((a / 32) * Math.PI * 2) * r);
-      const ex = m.explored[0][y * m.world.width + x];
-      m.explored[0][y * m.world.width + x] = 1;
-      const ok = m.exec(0, { type: 'found', sid: c.id, x, y });
-      if (ok.ok) target = { x, y };
-      else m.explored[0][y * m.world.width + x] = ex;
+/** A spot where player `pid` may start, at least `apart` tiles from (ax, ay). */
+function spawnSpot(m, ax = null, ay = null, apart = 40) {
+  for (const s of m.startSites) {
+    if (m.spawnError(s.x, s.y)) continue;
+    if (ax !== null && Math.hypot(s.x - ax, s.y - ay) < apart) continue;
+    return s;
+  }
+  for (let y = 10; y < m.H - 10; y += 3) {
+    for (let x = 10; x < m.W - 10; x += 3) {
+      if (m.spawnError(x, y)) continue;
+      if (ax !== null && Math.hypot(x - ax, y - ay) < apart) continue;
+      return { x, y };
     }
   }
-  assert.ok(target, 'found a target');
-  assert.ok(m.state.parties.some((p) => p.kind === 'settlers'));
-  assert.ok(c.pop <= 60 - RULES.settlerPop + 1e-9);
-  assert.ok(m.settlementsOf(0).length === 1, 'not founded instantly');
-  let waited = 0;
-  while (m.settlementsOf(0).length === 1 && waited < 200) {
-    run(m, 1);
-    waited++;
-  }
-  const out = m.settlementsOf(0).find((s) => s !== c);
-  assert.ok(out, 'outpost founded after travel');
-  assert.ok(waited >= 5, `travel took ${waited}s`);
-  assert.equal(out.stage, 0);
-  assert.ok(out.pop <= RULES.settlerPop + 1);
-  assert.ok(validateLayout(m.world, m.layouts.get(out.id)).ok);
-  // Unexplored land cannot be settled.
-  m.explored[0].fill(0);
-  k.stock.wood = 999;
-  k.stock.food = 999;
-  c.pop = 90;
-  assert.match(m.exec(0, { type: 'found', sid: c.id, x: target.x + 12, y: target.y }).error || '', /explore|Too close|terrain|belongs/);
-});
+  throw new Error('no spawn spot');
+}
 
-test('territory does not spread by itself', () => {
-  const m = twoKingdoms();
-  const count = () => m.ownerK.reduce((a, v) => a + (v === 0 ? 1 : 0), 0);
-  const t0 = count();
-  m.state.kingdoms[0].stock.wood = 0;
-  run(m, 60);
-  assert.equal(count(), t0);
-});
-
-test('roads are built tile by tile, cost wood and connect settlements', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  // Make a second settlement directly (as if founded) nearby.
-  let spot = null;
-  for (let r = 16; r < 30 && !spot; r++) for (let a = 0; a < 24 && !spot; a++) {
-    const x = Math.round(c.x + Math.cos(a / 3.8) * r);
-    const y = Math.round(c.y + Math.sin(a / 3.8) * r);
-    if (!m.placementError(x, y) || m.world.biome[y * m.world.width + x] === B.GRASS) {
-      if (m.world.biome[y * m.world.width + x] >= B.BEACH && m.world.biome[y * m.world.width + x] !== B.PEAK && m.world.biome[y * m.world.width + x] !== B.MOUNTAIN) spot = { x, y };
-    }
-  }
-  const s2 = m.newSettlement(0, spot.x, spot.y, { kind: 'outpost', stage: 0, pop: 12 });
-  m.recomputeTerritory();
-  k.stock.wood = 1000;
-  k.stock.stone = 1000;
-  const r = m.exec(0, { type: 'road', a: s2.id, b: c.id });
-  assert.ok(r.ok, r.error);
-  const wood0 = k.stock.wood;
-  run(m, 2);
-  assert.ok(m.state.roadJobs.length === 1, 'still under construction');
-  run(m, 400);
-  assert.equal(m.state.roadJobs.length, 0, 'finished');
-  assert.ok(k.stock.wood < wood0, 'paid in wood');
-  run(m, 1.5);
-  assert.ok(s2.connected, 'connected to the capital');
-});
-
-test('market prices respond to supply and demand and recover over time', () => {
-  const m = twoKingdoms();
-  const p0 = priceOf(m, 'wood');
-  m.state.market.stock.wood *= 2;
-  const cheap = priceOf(m, 'wood');
-  assert.ok(cheap < p0 * 0.7);
-  run(m, 300);
-  assert.ok(priceOf(m, 'wood') > cheap, 'outside demand pulls the price back');
-  m.state.market.stock.iron *= 0.3;
-  assert.ok(priceOf(m, 'iron') > 2 * 7.5 * 0.9);
-});
-
-test('a sell order sends a caravan that takes time and brings coin back', () => {
-  const m = twoKingdoms();
-  const k = m.state.kingdoms[0];
-  const c = cap(m, 0);
-  c.buildings.market = 1;
-  k.stock.wood = 900;
-  k.coin = 500;
-  const r = m.exec(0, { type: 'order', res: 'wood', side: 'sell', amount: 40, limit: 0.5, keep: 100 });
-  assert.ok(r.ok, r.error);
-  run(m, 6);
-  const car = m.state.parties.find((p) => p.kind === 'caravan' && p.kid === 0);
-  assert.ok(car, 'caravan dispatched');
-  assert.ok(k.stock.wood <= 900 - 40 + 1);
-  const coinAfterFare = k.coin;
-  let t = 0;
-  while (m.state.parties.some((p) => p.id === car.id) && t < 1500) {
-    run(m, 5);
-    t += 5;
-  }
-  assert.ok(t > 10, 'the journey takes time');
-  assert.ok(k.coin > coinAfterFare, 'sale proceeds arrive home');
-  assert.ok(m.state.market.stock.wood > 900 - 1, 'the free city now holds more wood');
-});
-
-test('trade agreements deliver goods between kingdoms by caravan', () => {
-  const m = twoKingdoms();
-  const A = m.state.kingdoms[0];
-  const Bk = m.state.kingdoms[1];
-  A.stock.wood = 500;
-  Bk.stock.stone = 500;
-  const r = m.exec(0, { type: 'propose', to: 1, give: { res: 'wood', n: 20 }, get: { res: 'stone', n: 10 }, every: 20, times: 2 });
-  assert.ok(r.ok, r.error);
-  const prop = m.state.proposals[0];
-  assert.ok(m.exec(1, { type: 'respond', id: prop.id, accept: true }).ok);
-  const bStone0 = Bk.stock.stone;
-  const aStone0 = A.stock.stone;
-  run(m, 6);
-  assert.ok(Bk.stock.stone <= bStone0 - 10 + 1, 'B paid');
-  assert.ok(m.state.parties.some((p) => p.mode === 'deliver'));
-  run(m, 600);
-  assert.ok(A.stock.stone > aStone0 + 5, 'A received stone');
-});
-
-test('borders are closed in peace and open in war', () => {
-  const m = twoKingdoms();
-  const a = cap(m, 0);
-  const b = cap(m, 1);
-  a.garrison.inf = 20;
-  const r = m.exec(0, { type: 'formArmy', sid: a.id, units: { inf: 20 } });
-  assert.ok(r.ok);
-  assert.match(m.exec(0, { type: 'move', aid: r.id, x: b.x, y: b.y }).error || 'blocked', /peace|reach|blocked/);
-  m.state.t = 200;
-  assert.ok(m.exec(0, { type: 'declareWar', to: 1 }).ok);
-  assert.ok(m.exec(0, { type: 'move', aid: r.id, x: b.x, y: b.y }).ok, 'war opens the way');
-});
-
-test('defenders on hills hold better than on open grass', async () => {
-  const { tick } = await import('../engine/sim/military.js');
-  const m = twoKingdoms();
-  m.state.t = 200;
-  m.exec(0, { type: 'declareWar', to: 1 });
-  const W = m.world.width;
-  const find = (biome) => {
-    for (let i = 0; i < m.world.biome.length; i++) {
-      if (m.world.biome[i] === biome && m.world.biome[i + 1] === biome && m.ownerK[i] === -1) return { x: i % W, y: (i / W) | 0 };
-    }
-    return null;
-  };
-  const fight = (spot) => {
-    m.state.armies = [];
-    const mk = (kid, x, y) => ({ id: m.nextId(), kid, x, y, units: { militia: 0, inf: 30, arch: 0, siege: 0 }, path: null, pi: 0, pf: 0, dest: null, supply: 90, morale: 1, state: 'idle', inSupply: true, home: -1, retreatT: 0 });
-    const def = mk(1, spot.x, spot.y);
-    const att = mk(0, spot.x + 1, spot.y);
-    att.path = [spot.y * W + spot.x + 1, spot.y * W + spot.x];
-    m.state.armies.push(def, att);
-    for (let i = 0; i < 40; i++) tick(m, TICK);
-    return { def: def.units.inf, att: att.units.inf };
-  };
-  const hill = fight(find(B.HILLS));
-  const grass = fight(find(B.GRASS));
-  assert.ok(hill.def > grass.def, `hill defenders kept ${hill.def.toFixed(1)}, grass ${grass.def.toFixed(1)}`);
-});
-
-test('walls must be breached before capture; capture moves ownership and causes unrest', () => {
-  const m = twoKingdoms();
-  const b = cap(m, 1);
-  const A = m.state.kingdoms[0];
-  const Bk = m.state.kingdoms[1];
-  b.walls = { level: 1, hp: WALLS[1].hp };
-  b.garrison = { militia: 0, inf: 3, arch: 0, siege: 0 };
-  m.state.t = 200;
-  m.exec(0, { type: 'declareWar', to: 1 });
-  Bk.stock.wood = 400;
-  const army = { id: m.nextId(), kid: 0, x: b.x + 1, y: b.y + 1, units: { militia: 0, inf: 40, arch: 0, siege: 2 }, path: null, pi: 0, pf: 0, dest: null, supply: 90, morale: 1, state: 'idle', inSupply: true, home: -1, retreatT: 0 };
-  m.state.armies.push(army);
-  run(m, 3);
-  assert.ok(b.siege, 'siege begins');
-  assert.equal(b.kingdom, 1, 'walls still hold');
-  assert.ok(b.walls.hp < WALLS[1].hp);
-  const pop0 = b.pop;
-  const aWood0 = A.stock.wood;
-  run(m, 120);
-  assert.equal(b.kingdom, 0, 'captured');
-  assert.ok(b.unrest > 0, 'unrest after conquest');
-  assert.ok(b.pop < pop0, 'people fled or died');
-  assert.ok(A.stock.wood > aWood0, 'loot');
-  assert.ok(m.exec(0, { type: 'build', sid: b.id, kind: 'farm' }).error, 'no building during unrest');
-  assert.ok(validateLayout(m.world, m.layouts.get(b.id)).ok, 'layout still valid after capture');
-  // The loser had only this town: eliminated.
-  run(m, 2);
-  assert.equal(Bk.alive, false);
-});
-
-test('AI kingdoms play using the same commands and grow', () => {
-  const m = new Match({ seed: 5, size: 'small', placementTime: 0, players: [{ ai: true, personality: 'builder' }, { ai: true, personality: 'warlord' }, { ai: true, personality: 'merchant' }] });
-  run(m, 0.5);
+/** Two human players placed far apart; the match is running. */
+function twoPlayers(opts = {}) {
+  const m = new Match({ seed: 21, size: 'small', world: WORLD, placementTime: 0, players: [{ name: 'Aster' }, { name: 'Brann' }], ...opts });
+  const a = spawnSpot(m);
+  assert.ok(m.exec(0, { type: 'place', x: a.x, y: a.y }).ok);
+  const b = spawnSpot(m, a.x, a.y);
+  assert.ok(m.exec(1, { type: 'place', x: b.x, y: b.y }).ok);
+  m.step();
   assert.equal(m.state.phase, 'running');
-  run(m, 600);
-  for (const k of m.state.kingdoms) {
-    assert.ok(k.alive);
-    const towns = m.settlementsOf(k.id);
-    const built = towns.reduce((a, s) => a + Object.values(s.buildings).reduce((x, y) => x + y, 0), 0);
-    assert.ok(built > 3, `${k.name} built ${built}`);
-    assert.ok(k.stats.pop > 40, `${k.name} pop ${k.stats.pop}`);
-    for (const s of towns) assert.ok(validateLayout(m.world, m.layouts.get(s.id)).ok);
-  }
-  const errors = m.state.events.filter((e) => e.kind === 'error' && /failed/.test(e.text));
-  assert.equal(errors.length, 0, JSON.stringify(errors.slice(0, 3)));
-});
+  return m;
+}
 
-test('the simulation is deterministic', () => {
-  const play = () => {
-    const m = new Match({ seed: 9, size: 'small', world: WORLD, placementTime: 0, players: [{ ai: true }, { ai: true, personality: 'warlord' }] });
-    run(m, 240);
-    return JSON.stringify({ k: m.state.kingdoms.map((k) => [k.stock, k.coin, k.stats]), s: m.state.settlements.map((s) => [s.pop, s.buildings, s.layoutV]) });
-  };
-  assert.equal(play(), play());
-});
-
-test('every suggested start site gives a capital room to grow', () => {
-  for (const seed of [3, 7, 11]) {
-    const m = new Match({ seed, size: 'small', placementTime: 0, players: [{ name: 'P' }] });
-    for (const site of m.startSites.slice(0, 6)) {
-      if (m.placementError(site.x, site.y)) continue;
-      const probe = new Match({ seed, size: 'small', world: m.world, placementTime: 0, players: [{ name: 'P' }] });
-      assert.ok(probe.exec(0, { type: 'place', x: site.x, y: site.y }).ok);
-      const cap = probe.settlement(probe.state.kingdoms[0].capital);
-      assert.ok(cap.houses >= 5, `seed ${seed} site ${site.x},${site.y}: ${cap.houses} houses`);
-      assert.ok(cap.housing >= cap.pop, 'housing for everyone at the start');
-      assert.ok(!cap.full, 'room for more houses');
+/** Hand every land tile within r of (x, y) to pid. */
+function claim(m, pid, x, y, r) {
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx >= m.W || ny >= m.H || dx * dx + dy * dy > r * r) continue;
+      const i = m.idx(nx, ny);
+      if (m.land[i]) m.setOwner(i, pid);
     }
   }
-});
+}
 
-test('domination must be held: most towns and people for several minutes', () => {
-  const m = twoKingdoms();
-  const home = cap(m, 0);
-  // Give the first realm a ring of outposts far from its rival.
-  let added = 0;
-  for (let r = 12; r < 60 && added < 8; r += 4) {
-    for (let a = 0; a < 16 && added < 8; a++) {
-      const x = Math.round(home.x + Math.cos(a * 0.39) * r);
-      const y = Math.round(home.y + Math.sin(a * 0.39) * r);
-      if (!canFoundAt(m.world, x, y)) continue;
-      if (m.state.settlements.some((s) => Math.hypot(s.x - x, s.y - y) < 10)) continue;
-      m.newSettlement(0, x, y, { pop: 12 });
-      added++;
-    }
+/** A tile next to pid's border that nobody owns. */
+function neutralEdge(m, pid) {
+  for (let i = 0; i < m.owner.length; i++) if (m.owner[i] === -1 && m.land[i] && m.touches(i, pid)) return { x: i % m.W, y: (i / m.W) | 0 };
+  return null;
+}
+
+test('starting claims a patch of land around a hamlet', () => {
+  const m = twoPlayers();
+  for (const p of m.state.players) {
+    assert.ok(p.spawned && p.alive);
+    assert.ok(p.tiles > 50 && p.tiles <= 90, `${p.name} starts with ${p.tiles} tiles`);
+    const town = m.state.structures.find((s) => s.owner === p.id);
+    assert.equal(town.kind, 'town');
+    assert.ok(town.capital);
+    assert.equal(m.owner[m.idx(town.x, town.y)], p.id);
+    assert.ok(validateLayout(m.world, m.layouts.get(town.id)).ok);
   }
-  assert.equal(added, 8);
-  m.checkVictory();
-  assert.equal(m.state.winner, null, 'no instant win');
-  assert.ok(m.state.events.some((e) => /dominates the realm/.test(e.text)), 'rivals are warned');
-  for (let i = 0; i < RULES.dominationHold - 2; i++) m.checkVictory();
-  assert.equal(m.state.winner, null);
-  // Losing the majority resets the clock.
-  const saved = m.state.kingdoms[0].domHeld;
-  assert.ok(saved > 0);
-  for (const s of m.settlementsOf(0).slice(1, 7)) s.kingdom = 1;
-  m.checkVictory();
-  assert.equal(m.state.kingdoms[0].domHeld, 0);
-  for (const s of m.state.settlements) if (s.kingdom === 1 && !s.capital) s.kingdom = 0;
-  for (let i = 0; i <= RULES.dominationHold; i++) m.checkVictory();
-  assert.deepEqual(m.state.winner, { kid: 0, how: 'domination' });
+  // Nobody owns water.
+  for (let i = 0; i < m.owner.length; i++) if (m.owner[i] >= 0) assert.ok(m.land[i]);
 });
 
-test('the economy is small: four resources, eight buildings, five kinds of work', () => {
-  assert.deepEqual(RES_KEYS, ['food', 'wood', 'stone', 'iron']);
-  assert.deepEqual(Object.keys(BUILDINGS), ['farm', 'fishery', 'lumber', 'quarry', 'mine', 'market', 'barracks', 'wonder']);
-  assert.deepEqual(LABOR, ['food', 'wood', 'stone', 'iron', 'build']);
-  // Every cost and output uses only those resources (or gold).
-  for (const def of [...Object.values(BUILDINGS), ...Object.values(UNITS)]) {
-    for (const r of Object.keys({ ...def.cost, ...def.out })) assert.ok(RES_KEYS.includes(r) || r === 'coin', `${def.name}: ${r}`);
-  }
+test('start spots must be open land, apart from other realms', () => {
+  const m = new Match({ seed: 21, size: 'small', world: WORLD, placementTime: 0, players: [{ name: 'Aster' }, { name: 'Brann' }] });
+  let water = null;
+  for (let i = 0; i < m.owner.length && !water; i++) if (m.world.biome[i] === B.DEEP) water = { x: i % m.W, y: (i / m.W) | 0 };
+  assert.match(m.exec(0, { type: 'place', ...water }).error, /open land/);
+  const a = spawnSpot(m);
+  assert.ok(m.exec(0, { type: 'place', x: a.x, y: a.y }).ok);
+  assert.match(m.exec(0, { type: 'place', x: a.x + 30, y: a.y }).error, /already started/);
+  const near = m.exec(1, { type: 'place', x: a.x + 3, y: a.y + 3 });
+  assert.match(near.error, /already holds|Too close/);
 });
 
-test('there is no fog of war: every realm sees every town and army', () => {
-  const m = twoKingdoms();
-  const theirs = cap(m, 1);
-  theirs.garrison.inf = 6;
-  assert.ok(m.exec(1, { type: 'formArmy', sid: theirs.id }).ok);
+test('people grow toward a limit set by land and towns', () => {
+  const m = twoPlayers();
+  const p = m.state.players[0];
+  const pop0 = p.pop;
+  run(m, 30);
+  assert.ok(p.pop > pop0 * 1.5, `grew from ${pop0} to ${Math.round(p.pop)}`);
+  const levels = m.state.structures.filter((s) => s.owner === 0 && s.kind === 'town').reduce((t, s) => t + TOWN_LEVELS[s.level].pop, 0);
+  assert.equal(p.maxPop, RULES.baseMaxPop + p.tiles * RULES.popPerTile + levels);
+  run(m, 240);
+  assert.ok(p.pop <= p.maxPop * 1.001, 'never above the limit by growth');
+  assert.ok(p.pop > p.maxPop * 0.9, 'close to the limit after a while');
+});
+
+test('workers earn gold: a smaller army means a richer realm', () => {
+  const m = twoPlayers();
+  m.exec(0, { type: 'troops', share: 0.2 });
+  m.exec(1, { type: 'troops', share: 0.9 });
+  run(m, 20);
+  const [a, b] = m.state.players;
+  assert.ok(a.goldRate > b.goldRate * 2, `${a.goldRate} vs ${b.goldRate}`);
+  assert.ok(a.gold > b.gold);
+  assert.equal(m.exec(0, { type: 'troops', share: 5 }).ok, true);
+  assert.equal(a.troopShare, 0.95, 'the slider is clamped');
+});
+
+test('attacking unclaimed land spends troops and pushes the border out', () => {
+  const m = twoPlayers();
+  const p = m.state.players[0];
+  run(m, 10);
+  const tiles0 = p.tiles;
+  const troops0 = m.troops(p);
+  const at = neutralEdge(m, 0);
+  const r = m.exec(0, { type: 'attack', x: at.x, y: at.y, ratio: 0.5 });
+  assert.equal(r.how, 'land');
+  assert.equal(m.state.attacks.length, 1);
+  assert.ok(Math.abs(m.troops(p) - troops0 * 0.5) < troops0 * 0.01, 'half the troops left with the attack');
   run(m, 2);
-  const snap = snapshot(m, 0);
-  assert.ok(snap.settlements.some((s) => s.id === theirs.id), 'the rival capital is visible');
-  assert.equal(snap.settlements.length, m.state.settlements.length, 'every settlement is visible');
-  assert.ok(snap.armies.some((a) => a.kid === 1), 'the rival army is visible');
-  // Private details stay private.
-  assert.equal(snap.kingdoms[1].stock, undefined);
-  assert.equal(snap.settlements.find((s) => s.id === theirs.id).garrison, undefined);
-  // Settlers may go anywhere within reach: no exploring first.
-  const home = cap(m, 0);
-  home.pop = 60;
-  home.stage = 1;
-  let target = null;
-  for (let r = 14; r < 40 && !target; r += 2) {
-    for (let a = 0; a < 24; a++) {
-      const x = Math.round(home.x + Math.cos(a * 0.26) * r);
-      const y = Math.round(home.y + Math.sin(a * 0.26) * r);
-      if (canFoundAt(m.world, x, y) && !m.exec(0, { type: 'found', sid: home.id, x, y }).error) {
-        target = { x, y };
+  assert.ok(p.tiles > tiles0 + 20, `border moved: ${tiles0} → ${p.tiles}`);
+  run(m, 60);
+  assert.equal(m.state.attacks.length, 0, 'the attack ends when its troops are spent');
+  const gained = p.tiles - tiles0;
+  assert.ok(gained > 100, `took ${gained} tiles`);
+  // A tile costs about RULES.neutralCost troops on open ground, more in rough country.
+  assert.ok(gained < (troops0 * 0.5) / RULES.neutralCost + 5);
+});
+
+test('rough terrain costs more troops than open grassland', () => {
+  const m = twoPlayers();
+  const a = { from: 0, to: -1, troops: 1000, id: 1 };
+  const find = (b) => {
+    for (let i = 0; i < m.owner.length; i++) if (m.world.biome[i] === b) return i;
+    return -1;
+  };
+  const grass = tileCost(m, a, find(B.GRASS)).cost;
+  const forest = tileCost(m, a, find(B.FOREST)).cost;
+  const mountain = tileCost(m, a, find(B.MOUNTAIN)).cost;
+  assert.ok(grass < forest && forest < mountain, `${grass} < ${forest} < ${mountain}`);
+});
+
+test('war: tiles change hands, defenders lose troops, towns are captured', () => {
+  const m = twoPlayers();
+  const [a, b] = m.state.players;
+  const town = m.state.structures.find((s) => s.owner === 1);
+  // Make the two realms neighbours: Aster holds a ring right around Brann's land.
+  claim(m, 0, town.x, town.y, 14);
+  claim(m, 1, town.x, town.y, 8);
+  a.troops = 400000;
+  const bTiles = b.tiles;
+  const bTroops = b.troops;
+  const r = m.exec(0, { type: 'attack', x: town.x, y: town.y, ratio: 1 });
+  assert.equal(r.how, 'land');
+  assert.ok(m.state.events.some((e) => e.kid === 1 && e.kind === 'attacked'), 'the defender is told');
+  run(m, 20);
+  assert.ok(b.tiles < bTiles, `${bTiles} → ${b.tiles}`);
+  assert.ok(b.troops < bTroops, 'defenders fell');
+  assert.equal(town.owner, 0, 'the town changed hands');
+  assert.ok(m.state.events.some((e) => e.kid === 1 && e.kind === 'lost'));
+  run(m, 5);
+  if (b.tiles === 0) assert.equal(b.alive, false, 'a realm without land has fallen');
+});
+
+test('outposts make the land around them harder to take', () => {
+  const m = twoPlayers();
+  const town = m.state.structures.find((s) => s.owner === 1);
+  claim(m, 1, town.x, town.y, 12);
+  const atk = { from: 0, to: 1, troops: 5000, id: 9 };
+  m.state.players[1].gold = 1e6;
+  let spot = null;
+  for (let r = 6; r <= 10 && !spot; r++) {
+    for (const [dx, dy] of [[r, 0], [-r, 0], [0, r], [0, -r]]) {
+      if (m.exec(1, { type: 'build', kind: 'outpost', x: town.x + dx, y: town.y + dy }).ok) {
+        spot = { x: town.x + dx, y: town.y + dy };
         break;
       }
     }
   }
-  assert.ok(target, 'settlers set out without any exploring');
+  assert.ok(spot, 'an outpost was built');
+  const near = tileCost(m, atk, m.idx(spot.x + 1, spot.y)).cost;
+  const out = m.state.structures.find((s) => s.kind === 'outpost');
+  m.state.structures = m.state.structures.filter((s) => s !== out);
+  const without = tileCost(m, atk, m.idx(spot.x + 1, spot.y)).cost;
+  assert.ok(near > without * 1.8, `${near} vs ${without}`);
+});
+
+test('alliances: asking, answering, no attacks between allies, betrayal', () => {
+  const m = twoPlayers();
+  const [a, b] = m.state.players;
+  const town = m.state.structures.find((s) => s.owner === 1);
+  claim(m, 0, town.x, town.y, 14);
+  claim(m, 1, town.x, town.y, 8);
+  assert.ok(m.exec(0, { type: 'ally', to: 1 }).ok);
+  assert.match(m.exec(0, { type: 'ally', to: 1 }).error, /already asked/);
+  const req = m.state.requests[0];
+  assert.equal(req.to, 1);
+  // Asking back seals it.
+  assert.ok(m.exec(1, { type: 'ally', to: 0 }).ok);
+  assert.ok(m.allied(0, 1));
+  assert.equal(m.state.requests.length, 0);
+  assert.match(m.exec(0, { type: 'attack', x: town.x, y: town.y }).error, /ally/);
+  // Trade between allies is worth more, and the alliance runs out.
+  const atk = { from: 0, to: 1, troops: 5000, id: 3 };
+  const before = tileCost(m, atk, m.idx(town.x + 2, town.y)).cost;
+  assert.ok(m.exec(1, { type: 'breakAlliance', to: 0 }).ok);
+  assert.ok(!m.allied(0, 1));
+  assert.ok(b.traitorUntil > m.state.t, 'the one who broke it is a traitor');
+  assert.ok(m.state.events.some((e) => e.kind === 'betrayal'));
+  const after = tileCost(m, atk, m.idx(town.x + 2, town.y)).cost;
+  assert.ok(after < before, `a traitor's land is easier to take (${after} < ${before})`);
+  // Requests expire.
+  assert.ok(m.exec(0, { type: 'ally', to: 1 }).ok);
+  run(m, RULES.requestTime + 2);
+  assert.equal(m.state.requests.length, 0);
+  // Alliances expire too.
+  m.exec(0, { type: 'ally', to: 1 });
+  m.exec(1, { type: 'answer', id: m.state.requests[0].id, accept: true });
+  assert.ok(m.allied(0, 1));
+  run(m, RULES.allianceTime + 2);
+  assert.ok(!m.allied(0, 1));
+  assert.ok(a.alive && b.alive);
+});
+
+test('boats carry troops across the water and land as an attack', () => {
+  const m = new Match({ seed: 21, size: 'small', world: WORLD, placementTime: 0, players: [{ name: 'Aster' }] });
+  // Land masses, so the target lies on a different one.
+  const mass = new Int32Array(m.W * m.H).fill(-1);
+  const size = [];
+  let n = 0;
+  for (let i = 0; i < mass.length; i++) {
+    if (!m.land[i] || mass[i] >= 0) continue;
+    const stack = [i];
+    mass[i] = n;
+    while (stack.length) {
+      const j = stack.pop();
+      const x = j % m.W;
+      for (const k of [x > 0 ? j - 1 : -1, x < m.W - 1 ? j + 1 : -1, j - m.W, j + m.W]) {
+        if (k < 0 || k >= mass.length || !m.land[k] || mass[k] >= 0) continue;
+        mass[k] = n;
+        stack.push(k);
+      }
+    }
+    size.push(mass.reduce((t, v) => t + (v === n ? 1 : 0), 0));
+    n++;
+  }
+  // A coastal start, and the nearest coast of another land mass on the same water.
+  let pair = null;
+  for (const i of m.coastTiles) {
+    const x = i % m.W;
+    const y = (i / m.W) | 0;
+    if (m.spawnError(x, y)) continue;
+    for (const j of m.coastTiles) {
+      if (mass[j] === mass[i] || m.coast[j] !== m.coast[i] || size[mass[j]] < 400) continue;
+      const d = Math.hypot((j % m.W) - x, ((j / m.W) | 0) - y);
+      if (d > 12 && d < 60 && (!pair || d < pair.d)) pair = { i, j, d };
+    }
+    if (pair) break;
+  }
+  assert.ok(pair, 'the test world has two shores across water');
+  const sx = pair.i % m.W;
+  const sy = (pair.i / m.W) | 0;
+  assert.ok(m.exec(0, { type: 'place', x: sx, y: sy }).ok);
+  m.step();
+  const p = m.state.players[0];
+  const tx = pair.j % m.W;
+  const ty = (pair.j / m.W) | 0;
+  p.troops = 12000;
+  const r = m.exec(0, { type: 'attack', x: tx, y: ty, ratio: 0.5 });
+  assert.equal(r.how, 'boat', JSON.stringify(r));
+  assert.equal(m.state.boats.length, 1);
+  const boat = m.state.boats[0];
+  assert.ok(boat.troops > 1000);
+  let landed = false;
+  for (let k = 0; k < 600 && !landed; k++) {
+    m.step();
+    landed = !m.state.boats.includes(boat);
+  }
+  assert.ok(landed, 'the boat arrived');
+  run(m, 3);
+  let across = 0;
+  for (let i = 0; i < m.owner.length; i++) if (m.owner[i] === 0 && mass[i] === mass[pair.j]) across++;
+  assert.ok(across > 20, `took ${across} tiles on the far shore`);
+  assert.ok(p.stats.boats === 1);
+  // At most three boats at sea.
+  for (let k = 0; k < 3; k++) m.exec(0, { type: 'boat', x: sx, y: sy, ratio: 0.01 });
+});
+
+test('trade ships sail between ports and pay both owners', () => {
+  const m = twoPlayers();
+  // Two ports on the same sea, owned by different players.
+  const body = m.coast[m.coastTiles[0]];
+  const shores = m.coastTiles.filter((i) => m.coast[i] === body && m.owner[i] === -1);
+  const first = shores[0];
+  const far = shores.find((i) => Math.hypot((i % m.W) - (first % m.W), ((i / m.W) | 0) - ((first / m.W) | 0)) > 40);
+  assert.ok(far !== undefined);
+  const ports = [];
+  for (const [pid, i] of [[0, first], [1, far]]) {
+    const x = i % m.W;
+    const y = (i / m.W) | 0;
+    claim(m, pid, x, y, 4);
+    ports.push(createStructure(m, 'port', pid, x, y));
+  }
+  const g0 = m.state.players.map((p) => p.gold);
+  run(m, 120);
+  const [a, b] = m.state.players;
+  assert.ok(a.stats.trade > 0 && b.stats.trade > 0, `trade ${a.stats.trade} / ${b.stats.trade}`);
+  assert.ok(a.gold > g0[0] && b.gold > g0[1]);
+  assert.ok(m.state.boats.some((s) => s.kind === 'trade') || a.stats.trade > 0);
+});
+
+test('towns grow by themselves and can be raised to a walled city', () => {
+  const m = twoPlayers();
+  const p = m.state.players[0];
+  const home = m.state.structures.find((s) => s.owner === 0);
+  claim(m, 0, home.x, home.y, 30);
+  p.gold = 1e6;
+  let spot = null;
+  for (let r = 14; r <= 26 && !spot; r += 2) {
+    for (const [dx, dy] of [[r, 0], [-r, 0], [0, r], [0, -r], [r, r], [-r, -r]]) {
+      const res = m.exec(0, { type: 'build', kind: 'town', x: home.x + dx, y: home.y + dy });
+      if (res.ok) {
+        spot = res.id;
+        break;
+      }
+    }
+  }
+  assert.ok(spot, 'a second town was founded');
+  assert.equal(p.built.town, 1);
+  assert.ok(p.gold < 1e6 - structureCost('town', 0) + 1);
+  const town = m.state.structures.find((s) => s.id === spot);
+  const L = m.layouts.get(town.id);
+  const houses0 = L.buildings.filter((b) => b.kind === 'house').length;
+  run(m, 40);
+  assert.ok(L.buildings.filter((b) => b.kind === 'house').length > houses0, 'houses went up on their own');
+  for (let k = 0; k < 3; k++) assert.ok(m.exec(0, { type: 'upgrade', sid: town.id }).ok);
+  assert.equal(town.level, 4);
+  assert.match(m.exec(0, { type: 'upgrade', sid: town.id }).error, /already a city/);
+  assert.equal(L.stage, TOWN_LEVELS[4].stage);
+  assert.ok(L.walls && L.walls.level >= 2, 'a city has stone walls');
+  run(m, 120);
+  assert.ok(validateLayout(m.world, L).ok);
+  assert.ok(p.maxPop > RULES.baseMaxPop + p.tiles * RULES.popPerTile + TOWN_LEVELS[4].pop - 1);
+  // Building on someone else's land is refused.
+  const theirs = m.state.structures.find((s) => s.owner === 1);
+  assert.match(m.exec(0, { type: 'build', kind: 'town', x: theirs.x + 3, y: theirs.y }).error, /own land/);
+});
+
+test('victory: the first to hold 80% of the land wins', () => {
+  const m = twoPlayers();
+  let need = Math.ceil(m.landTotal * RULES.winShare) - m.state.players[0].tiles;
+  for (let i = 0; i < m.owner.length && need > 0; i++) {
+    if (m.land[i] && m.owner[i] === -1) {
+      m.setOwner(i, 0);
+      need--;
+    }
+  }
+  run(m, 1.1);
+  assert.equal(m.state.phase, 'over');
+  assert.deepEqual(m.state.winner, { kid: 0, how: 'domination' });
+});
+
+test('when time runs out, the realm with the most land wins', () => {
+  const m = twoPlayers({ timeLimit: 30 });
+  const town = m.state.structures.find((s) => s.owner === 1);
+  claim(m, 1, town.x, town.y, 12);
+  run(m, 31);
+  assert.deepEqual(m.state.winner, { kid: 1, how: 'time' });
+});
+
+test('AI players expand, build, ally and fight on their own', { timeout: 120000 }, () => {
+  const m = new Match({ seed: 5, size: 'small', world: generateWorld({ seed: 5, ...WORLD_SIZES.small }), placementTime: 0.2, players: Array.from({ length: 6 }, () => ({ ai: true })) });
+  run(m, 300);
+  const st = m.state;
+  assert.ok(st.players.every((p) => p.spawned));
+  const held = st.players.reduce((t, p) => t + p.tiles, 0);
+  assert.ok(held > m.landTotal * 0.6, `claimed ${Math.round((held / m.landTotal) * 100)}% of the land`);
+  assert.ok(st.structures.filter((s) => s.kind === 'town').length > st.players.length, 'new towns');
+  assert.ok(st.players.some((p) => p.stats.attacks > 3));
+  assert.ok(st.events.some((e) => e.kind === 'captured' || e.kind === 'fall') || st.players.some((p) => p.stats.lost > 50), 'realms fought');
+  for (const s of st.structures) assert.ok(validateLayout(m.world, m.layouts.get(s.id)).ok, `${s.name} layout valid`);
+});
+
+test('the simulation is deterministic', { timeout: 60000 }, () => {
+  const make = () => new Match({ seed: 9, size: 'small', world: WORLD, placementTime: 0.2, players: Array.from({ length: 4 }, () => ({ ai: true })) });
+  const a = make();
+  const b = make();
+  run(a, 90);
+  run(b, 90);
+  assert.equal(JSON.stringify(a.state), JSON.stringify(b.state));
+  assert.deepEqual([...a.owner], [...b.owner]);
+});
+
+test('players get the territory once, then only the tiles that changed', () => {
+  const m = twoPlayers();
+  const view = new PlayerView(m, 0);
+  const first = view.messages();
+  const terr = first.find((q) => q.t === 'terr');
+  assert.ok(terr, 'full territory on joining');
+  const mine = unrle(terr.owner, Int16Array, m.W * m.H);
+  const snap0 = first.find((q) => q.t === 'snap');
+  assert.ok(snap0.players[0].gold !== undefined, 'own gold');
+  assert.equal(snap0.players[1].gold, undefined, 'gold is private');
+  assert.ok(snap0.players[1].troops > 0, 'troops are public');
+  m.exec(0, { type: 'attack', ...neutralEdge(m, 0), ratio: 0.8 });
+  for (let k = 0; k < 5; k++) {
+    run(m, 0.6);
+    const msgs = view.messages();
+    assert.ok(!msgs.some((q) => q.t === 'terr'), 'no full resend');
+    const snap = msgs.find((q) => q.t === 'snap');
+    if (snap.td) applyDelta(mine, snap.td);
+  }
+  assert.deepEqual([...mine], [...m.owner], 'deltas rebuild the same map');
 });

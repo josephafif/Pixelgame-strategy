@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createGameServer } from '../server/index.js';
-import { unrle } from '../engine/net/protocol.js';
+import { unrle, applyDelta } from '../engine/net/protocol.js';
 import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -42,7 +42,7 @@ function client(port) {
   };
 }
 
-test('two players join a room, place capitals and share one authoritative match', { timeout: 120000 }, async () => {
+test('two players join a room, choose where to start and share one authoritative match', { timeout: 120000 }, async () => {
   const srv = createGameServer({ log: () => {} });
   const port = await srv.listen(0, '127.0.0.1');
   try {
@@ -82,35 +82,40 @@ test('two players join a room, place capitals and share one authoritative match'
     b.send({ t: 'cmd', cmd: { type: 'place', x: far.x, y: far.y } });
     const runA = await a.wait((m) => m.t === 'snap' && m.phase === 'running', 40000);
     const runB = await b.wait((m) => m.t === 'snap' && m.phase === 'running', 40000);
-    assert.equal(runA.kingdoms.length, 3, 'two humans and one AI');
+    assert.equal(runA.players.length, 3, 'two humans and one AI');
 
     // Private data only reaches its owner.
-    const meA = runA.kingdoms[ia.you];
-    const otherA = runA.kingdoms[ib.you];
-    assert.ok(meA.stock && meA.coin !== undefined);
-    assert.equal(otherA.stock, undefined, 'no peeking at rivals');
-    assert.ok(runB.kingdoms[ib.you].stock);
+    const meA = runA.players[ia.you];
+    const otherA = runA.players[ib.you];
+    assert.ok(meA.gold !== undefined && meA.troopShare !== undefined);
+    assert.equal(otherA.gold, undefined, 'no peeking at rivals');
+    assert.ok(otherA.troops > 0, 'troops are public');
+    assert.ok(runB.players[ib.you].gold !== undefined);
 
-    // Bulk data arrives: territory, layouts for own capital.
+    // Bulk data arrives: territory, layouts for the starting town.
     const terr = a.latest('terr');
     assert.ok(terr && terr.owner.length >= 2);
-    const owner = unrle(terr.owner, Int32Array, 320 * 224);
-    assert.ok(owner.some((v) => v >= 0));
-    const capA = runA.settlements.find((s) => s.id === meA.capital);
+    const owner = unrle(terr.owner, Int16Array, 320 * 224);
+    for (const m of a.inbox.slice(a.inbox.lastIndexOf(terr))) if (m.t === 'snap' && m.td) applyDelta(owner, m.td);
+    assert.ok(owner.some((v) => v === ia.you), 'the start shows up in the territory');
+    const capA = runA.structures.find((s) => s.owner === ia.you && s.capital);
+    assert.ok(capA, 'a starting town');
     assert.ok(a.inbox.some((m) => m.t === 'layout' && m.sid === capA.id));
 
     // A command goes through server-side validation; errors come back as events.
-    a.send({ t: 'cmd', cmd: { type: 'build', sid: capA.id, kind: 'wonder' } });
+    a.send({ t: 'cmd', cmd: { type: 'build', kind: 'town', x: far.x, y: far.y } });
     const errSnap = await a.wait((m) => m.t === 'snap' && (m.events || []).some((e) => e.kind === 'error'));
-    assert.ok(errSnap.events.some((e) => /city/i.test(e.text)));
+    assert.ok(errSnap.events.some((e) => /own land|costs/i.test(e.text)));
     // A valid command changes authoritative state, visible to its owner.
-    a.send({ t: 'cmd', cmd: { type: 'build', sid: capA.id, kind: 'farm' } });
-    const built = await a.wait((m) => m.t === 'snap' && m.settlements.some((s) => s.id === capA.id && (s.projects || []).some((p) => p.kind === 'farm')));
-    assert.ok(built);
-    // Commands for another kingdom's settlement are refused.
-    b.send({ t: 'cmd', cmd: { type: 'build', sid: capA.id, kind: 'farm' } });
-    const refused = await b.wait((m) => m.t === 'snap' && (m.events || []).some((e) => /Not your settlement/.test(e.text)));
+    a.send({ t: 'cmd', cmd: { type: 'troops', share: 0.25 } });
+    const moved = await a.wait((m) => m.t === 'snap' && m.players[ia.you].troopShare === 0.25);
+    assert.ok(moved);
+    // Nobody can give orders to another player's town.
+    b.send({ t: 'cmd', cmd: { type: 'upgrade', sid: capA.id } });
+    const refused = await b.wait((m) => m.t === 'snap' && (m.events || []).some((e) => /Not your town/.test(e.text)));
     assert.ok(refused);
+    // Territory changes arrive as small deltas.
+    await a.wait((m) => m.t === 'snap' && m.td && m.td.length > 0, 30000);
 
     // Both clients observe the same public clock and the same rival positions.
     const sa = a.latest('snap');
@@ -127,7 +132,7 @@ test('two players join a room, place capitals and share one authoritative match'
     b2.send({ t: 'join', code, token: joinedB.token });
     const ib2 = await b2.wait((m) => m.t === 'init');
     assert.equal(ib2.you, ib.you);
-    await b2.wait((m) => m.t === 'snap' && m.kingdoms[ib.you].stock);
+    await b2.wait((m) => m.t === 'snap' && m.players[ib.you].gold !== undefined);
     a.ws.close();
     b2.ws.close();
   } finally {
@@ -185,10 +190,10 @@ test('a running match survives a server restart and players rejoin with their to
     a2.send({ t: 'join', code, token: joined.token });
     const init2 = await a2.wait((m) => m.t === 'init');
     assert.equal(init2.you, init.you, 'same kingdom after the restart');
-    const snap = await a2.wait((m) => m.t === 'snap' && m.kingdoms[init.you].stock);
+    const snap = await a2.wait((m) => m.t === 'snap' && m.players[init.you].gold !== undefined);
     assert.equal(snap.phase, 'running');
     assert.ok(snap.time >= before.time, `clock continues (${snap.time} >= ${before.time})`);
-    assert.ok(snap.settlements.some((s) => s.id === snap.kingdoms[init.you].capital), 'the capital is still there');
+    assert.ok(snap.structures.some((s) => s.owner === init.you), 'the starting town is still there');
     // And the match runs on.
     await a2.wait((m) => m.t === 'snap' && m.time > snap.time + 1, 20000);
     // A stranger with a wrong token only gets to watch.

@@ -18,17 +18,21 @@ function aiMatch() {
 
 test('a saved match loads and continues exactly as the original', { timeout: 120000 }, () => {
   const a = aiMatch();
-  run(a, 150);
+  run(a, 40);
   // A pending human command must survive the save too.
-  a.command(0, { type: 'priority', cat: 'wood', level: 3 });
+  a.command(0, { type: 'troops', share: 0.3 });
   const text = JSON.stringify(saveMatch(a));
   const b = loadMatch(JSON.parse(text), { world: WORLD });
   assert.equal(JSON.stringify(saveMatch(b)), text, 'identical right after loading');
-  run(a, 120);
-  run(b, 120);
-  assert.equal(JSON.stringify(saveMatch(b)), JSON.stringify(saveMatch(a)), 'identical after two more minutes');
-  assert.equal(b.state.kingdoms[0].priorities.wood, 3);
-  for (const s of b.state.settlements) assert.ok(validateLayout(b.world, b.layouts.get(s.id)).ok, `${s.name} layout valid after load`);
+  run(a, 1);
+  run(b, 1);
+  assert.equal(b.state.players[0].troopShare, 0.3);
+  run(a, 180);
+  run(b, 180);
+  assert.equal(JSON.stringify(saveMatch(b)), JSON.stringify(saveMatch(a)), 'identical after three more minutes');
+  assert.ok(a.state.attacks.length + a.state.players.reduce((t, p) => t + p.stats.attacks, 0) > 5, 'the saved match had a war going on');
+  assert.deepEqual([...b.owner], [...a.owner], 'same territory');
+  for (const s of b.state.structures) assert.ok(validateLayout(b.world, b.layouts.get(s.id)).ok, `${s.name} layout valid after load`);
 });
 
 test('loading regenerates the world from the seed when none is given', { timeout: 120000 }, () => {
@@ -48,9 +52,11 @@ test('bad or mismatched saves are rejected with a clear error', () => {
   const data = saveMatch(a);
   assert.throws(() => loadMatch({ hello: 1 }), /not a Realmwright saved game/);
   assert.throws(() => loadMatch({ ...data, version: 99 }), /Unsupported save version/);
-  assert.throws(() => loadMatch({ ...data, version: 1 }), /older version/);
+  assert.throws(() => loadMatch({ ...data, version: 2 }), /older version/);
   assert.throws(() => loadMatch({ ...data, world: { ...data.world, check: 12345 } }, { world: WORLD }), /does not match/);
   const d = describeSave(data);
   assert.equal(d.name, 'Ilse');
-  assert.equal(d.kingdoms, 3);
+  assert.equal(d.players, 3);
+  assert.equal(typeof d.share, 'number');
+  assert.equal(d.alive, true);
 });

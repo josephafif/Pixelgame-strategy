@@ -3,14 +3,16 @@
 // simulation and streams per-player snapshots back.
 
 import { randomBytes } from 'node:crypto';
-import { Match } from '../engine/sim/match.js';
+import { Match, PERSONALITIES } from '../engine/sim/match.js';
 import { TICK } from '../engine/sim/defs.js';
 import { PlayerView, initMessage } from '../engine/net/protocol.js';
 import { saveMatch, loadMatch } from '../engine/sim/persist.js';
 
 const SIZES = ['small', 'medium', 'large'];
 const MAX_PLAYERS = 8;
-const SEND_EVERY = 2; // ticks between snapshots (0.5 s)
+const MAX_AIS = 24;
+const SEND_EVERY = 2; // ticks between snapshots (0.2 s)
+export const DEFAULT_AIS = { small: 6, medium: 10, large: 16 };
 const MAX_BACKLOG = 1 << 20;
 
 export function sanitizeName(name) {
@@ -20,12 +22,13 @@ export function sanitizeName(name) {
 
 export function sanitizeOpts(o = {}, prev = {}) {
   const num = (v, d, lo, hi) => (Number.isFinite(Number(v)) ? Math.max(lo, Math.min(hi, Math.round(Number(v)))) : d);
+  const size = SIZES.includes(o.size) ? o.size : prev.size || 'medium';
   return {
     seed: num(o.seed ?? prev.seed, prev.seed ?? Math.floor(Math.random() * 1e6), 1, 2 ** 31 - 1),
-    size: SIZES.includes(o.size) ? o.size : prev.size || 'medium',
-    ais: num(o.ais ?? prev.ais, prev.ais ?? 3, 0, 7),
-    placementTime: num(o.placementTime ?? prev.placementTime, prev.placementTime ?? 30, 10, 120),
-    timeLimit: num(o.timeLimit ?? prev.timeLimit, prev.timeLimit ?? 45, 10, 180),
+    size,
+    ais: num(o.ais ?? prev.ais, prev.ais ?? DEFAULT_AIS[size], 0, MAX_AIS),
+    placementTime: num(o.placementTime ?? prev.placementTime, prev.placementTime ?? 20, 10, 120),
+    timeLimit: num(o.timeLimit ?? prev.timeLimit, prev.timeLimit ?? 20, 5, 60),
   };
 }
 
@@ -161,8 +164,8 @@ export class Room {
     if (this.match) return 'Already started.';
     const humans = this.members.filter((m) => m.online);
     const players = humans.map((m) => ({ name: m.name }));
-    const total = Math.min(MAX_PLAYERS + 4, players.length + this.opts.ais);
-    for (let i = players.length; i < total; i++) players.push({ ai: true, personality: ['builder', 'merchant', 'warlord'][i % 3] });
+    const total = Math.min(MAX_PLAYERS + MAX_AIS, players.length + this.opts.ais);
+    for (let i = players.length; i < total; i++) players.push({ ai: true, personality: PERSONALITIES[i % 3] });
     this.match = new Match({ seed: this.opts.seed, size: this.opts.size, players, placementTime: this.opts.placementTime, timeLimit: this.opts.timeLimit * 60 });
     humans.forEach((m, k) => {
       m.kid = k;

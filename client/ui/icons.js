@@ -105,6 +105,28 @@ const PAINT = {
     p.hline(1, 5, 9, '#e8b840');
     p.hline(11, 15, 9, '#e8b840');
   },
+  anchor(p) {
+    p.vline(8, 3, 13, '#c4c3ca');
+    p.hline(5, 11, 5, '#c4c3ca');
+    p.ellipse(8, 2.5, 1.5, 1.5, '#8a8a92');
+    p.line(3, 10, 8, 14, '#c4c3ca');
+    p.line(13, 10, 8, 14, '#c4c3ca');
+    p.set(3, 9, '#ffffff');
+    p.set(13, 9, '#ffffff');
+  },
+  tower(p) {
+    p.rect(4, 5, 8, 9, '#a7a7af');
+    for (const x of [4, 7, 10]) p.rect(x, 3, 2, 2, '#a7a7af');
+    p.rect(7, 10, 2, 4, '#5a4a3a');
+    p.set(7, 7, '#3a3036');
+    p.hline(4, 11, 13, '#7a7a82');
+  },
+  flag(p) {
+    p.vline(4, 2, 14, '#8f6a3e');
+    p.rect(5, 3, 8, 6, '#5c8f4a');
+    p.hline(5, 12, 3, '#7ab062');
+    p.hline(2, 7, 14, '#6f5030');
+  },
   banner(p) {
     p.vline(3, 2, 14, '#8f6a3e');
     p.rect(4, 3, 9, 6, '#c4483a');

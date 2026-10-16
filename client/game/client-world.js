@@ -1,12 +1,14 @@
 // The client's picture of the match: the terrain (regenerated locally from
-// the seed), the latest snapshot, and versioned bulk data (territory, roads,
-// exploration, settlement layouts). It tracks which render caches are dirty.
+// the seed), the territory (sent in full once, then as changed tiles), the
+// latest snapshot and the settlement layouts. It records which tiles and
+// layouts changed so the renderer only repaints those.
 
 import { generateWorld, WORLD_SIZES } from '../../engine/world/worldgen.js';
 import { deserializeLayout, N as LN } from '../../engine/settlement/planner.js';
-import { unrle } from '../../engine/net/protocol.js';
+import { unrle, applyDelta } from '../../engine/net/protocol.js';
 import { makeOverlays, restampArea } from '../render/settlement-layer.js';
 import { CHUNK } from '../render/ground.js';
+import { isOpenWater } from '../../engine/world/biomes.js';
 
 export class ClientWorld {
   constructor(init) {
@@ -21,17 +23,18 @@ export class ClientWorld {
     this.H = H;
     this.ov = makeOverlays(this.world);
     this.layouts = new Map();
-    this.owner = new Int32Array(W * H).fill(-1);
-    this.ownerK = new Int8Array(W * H).fill(-1);
-    // No fog of war: the whole map is known to everyone.
-    this.explored = new Uint8Array(W * H).fill(1);
-    this.sidKingdom = new Map();
+    this.owner = new Int16Array(W * H).fill(-1);
+    this.land = new Uint8Array(W * H);
+    for (let i = 0; i < W * H; i++) this.land[i] = isOpenWater(this.world.biome[i]) ? 0 : 1;
     this.snap = null;
     this.prevSnap = null;
     this.snapAt = 0;
+    this.snapGap = 200;
     this.dirtyChunks = new Set();
     this.layerDirty = new Set();
-    this.territoryDirty = true;
+    this.terrAll = true; // repaint the whole territory image
+    this.terrTiles = []; // or just these tiles
+    this.terrV = 0;
     this.events = [];
     this.listeners = new Set();
   }
@@ -53,26 +56,12 @@ export class ClientWorld {
 
   apply(msg) {
     switch (msg.t) {
-      case 'terr': {
-        this.owner = unrle(msg.owner, Int32Array, this.W * this.H);
-        this.recomputeOwnerK();
+      case 'terr':
+        this.owner = unrle(msg.owner, Int16Array, this.W * this.H);
+        this.terrAll = true;
+        this.terrTiles = [];
+        this.terrV++;
         break;
-      }
-      case 'roads': {
-        const next = unrle(msg.data, Uint8Array, this.W * this.H);
-        const prev = this.ov.worldRoad;
-        const changed = [];
-        for (let i = 0; i < next.length; i++) if (next[i] !== prev[i]) changed.push(i);
-        this.ov.worldRoad = next;
-        const all = [...this.layouts.values()];
-        for (const i of changed) {
-          const x = i % this.W;
-          const y = (i / this.W) | 0;
-          restampArea(this.world, this.ov, all, x - 1, y - 1, x + 1, y + 1);
-          this.markArea(x, y, x, y);
-        }
-        break;
-      }
       case 'layout': {
         const L = deserializeLayout(msg.data);
         this.layouts.set(msg.sid, L);
@@ -82,18 +71,27 @@ export class ClientWorld {
         break;
       }
       case 'snap': {
+        if (msg.td && msg.td.length) {
+          const list = this.terrTiles;
+          applyDelta(this.owner, msg.td, (i) => list.push(i));
+          if (list.length > 60000) {
+            this.terrAll = true;
+            this.terrTiles = [];
+          }
+          this.terrV++;
+        }
+        const now = performance.now();
+        if (this.snap) this.snapGap = Math.max(60, Math.min(600, now - this.snapAt));
         this.prevSnap = this.snap;
         this.snap = msg;
-        this.snapAt = performance.now();
-        let ownerChange = false;
-        for (const s of msg.settlements) {
-          if (this.sidKingdom.get(s.id) !== s.kingdom) {
-            this.sidKingdom.set(s.id, s.kingdom);
-            this.layerDirty.add(s.id);
-            ownerChange = true;
-          }
+        this.snapAt = now;
+        this.players = msg.players;
+        this.byId = new Map(msg.structures.map((s) => [s.id, s]));
+        // A structure that changed hands needs its banners repainted.
+        if (this.prevSnap) {
+          const before = new Map(this.prevSnap.structures.map((s) => [s.id, s.owner]));
+          for (const s of msg.structures) if (before.get(s.id) !== s.owner) this.layerDirty.add(s.id);
         }
-        if (ownerChange) this.recomputeOwnerK();
         if (msg.events && msg.events.length) {
           for (const e of msg.events) this.events.push(e);
           if (this.events.length > 300) this.events.splice(0, this.events.length - 250);
@@ -107,66 +105,60 @@ export class ClientWorld {
     }
   }
 
-  recomputeOwnerK() {
-    const map = this.sidKingdom;
-    for (let i = 0; i < this.owner.length; i++) {
-      const o = this.owner[i];
-      this.ownerK[i] = o < 0 ? -1 : map.has(o) ? map.get(o) : -3; // -3: unknown (unexplored) owner
-    }
-    this.territoryDirty = true;
-  }
-
   // Convenience accessors over the latest snapshot.
   get me() {
-    return this.snap && this.you >= 0 ? this.snap.kingdoms[this.you] : null;
+    return this.snap && this.you >= 0 ? this.snap.players[this.you] : null;
   }
 
-  kingdom(id) {
-    return this.snap ? this.snap.kingdoms[id] : null;
+  player(id) {
+    return this.snap && id >= 0 ? this.snap.players[id] : null;
   }
 
-  settlement(id) {
-    return this.snap ? this.snap.settlements.find((s) => s.id === id) : null;
+  structure(id) {
+    return this.byId?.get(id) || null;
   }
 
-  army(id) {
-    return this.snap ? this.snap.armies.find((a) => a.id === id) : null;
+  colorOf(pid) {
+    const p = this.player(pid);
+    return p ? p.color : '#888888';
   }
 
-  mySettlements() {
-    return this.snap ? this.snap.settlements.filter((s) => s.kingdom === this.you) : [];
+  ownerAt(x, y) {
+    x = Math.floor(x);
+    y = Math.floor(y);
+    if (x < 0 || y < 0 || x >= this.W || y >= this.H) return -1;
+    return this.owner[y * this.W + x];
   }
 
-  colorOf(kid) {
-    if (kid === -2) return '#c8b88a';
-    const k = this.kingdom(kid);
-    return k ? k.color : '#888888';
-  }
-
-  isExplored(x, y) {
+  isLand(x, y) {
+    x = Math.floor(x);
+    y = Math.floor(y);
     if (x < 0 || y < 0 || x >= this.W || y >= this.H) return false;
-    return !!this.explored[y * this.W + x];
+    return !!this.land[y * this.W + x];
   }
 
-  /** Settlement under a world tile (nearest centre within its built area). */
-  settlementAt(x, y) {
+  allied(a, b) {
+    if (!this.snap || a < 0 || b < 0 || a === b) return false;
+    return this.snap.alliances.some((q) => (q.a === a && q.b === b) || (q.a === b && q.b === a));
+  }
+
+  alliance(a, b) {
+    return this.snap?.alliances.find((q) => (q.a === a && q.b === b) || (q.a === b && q.b === a)) || null;
+  }
+
+  /** The structure nearest (x, y) within r tiles. */
+  structureAt(x, y, r = 2.5) {
     if (!this.snap) return null;
     let best = null;
-    for (const s of this.snap.settlements) {
-      const r = 3 + s.stage * 1.5;
-      const d = Math.hypot(s.x - x, s.y - y);
+    for (const s of this.snap.structures) {
+      const d = Math.hypot(s.x + 0.5 - x, s.y + 0.5 - y);
       if (d <= r && (!best || d < best.d)) best = { s, d };
     }
     return best ? best.s : null;
   }
 
-  armyAt(x, y, radius = 1.2) {
-    if (!this.snap) return null;
-    let best = null;
-    for (const a of this.snap.armies) {
-      const d = Math.hypot(a.x - x, a.y - y);
-      if (d <= radius && (!best || d < best.d)) best = { a, d };
-    }
-    return best ? best.a : null;
+  share(pid) {
+    const p = this.player(pid);
+    return p ? p.tiles / Math.max(1, this.init.landTotal) : 0;
   }
 }

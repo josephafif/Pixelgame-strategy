@@ -1,56 +1,85 @@
-// The authoritative match simulation. It owns the game state, applies
-// validated commands, and advances all systems in fixed ticks. It never
-// touches rendering: settlement layouts are stable visual data derived
-// from gameplay events (a building finished → the planner places it).
+// The authoritative match. Every land tile has an owner (a player or
+// nobody). Players grow people with the land they hold, put a share of them
+// under arms, and send troops to push their borders into unclaimed land or
+// into a rival's realm. Towns, ports and outposts are the only buildings;
+// towns grow on their own as pixel-art settlements laid out by the planner.
 //
 // The same class runs on the multiplayer server and in the single-player
 // worker; clients only ever see snapshots.
 
-import { Rng } from '../core/rng.js';
+import { Rng, hash3 } from '../core/rng.js';
 import { GridSearch } from '../core/search.js';
 import { generateWorld, WORLD_SIZES } from '../world/worldgen.js';
-import { pickStartSites, pickTradeHubs, canFoundAt, analyzeSite } from '../world/sites.js';
-import { placeName, kingdomNames } from '../world/names.js';
-import { B, BIOMES } from '../world/biomes.js';
-import { createLayout, addBuilding, applyStage, buildWalls, markBlocked, syncWorldRoads, occupiedWorldCells, N as LN, O } from '../settlement/planner.js';
-import { TICK, RES_KEYS, STAGES, HOUSE, WALLS, BUILDINGS, RULES } from './defs.js';
-import * as economy from './economy.js';
-import * as expansion from './expansion.js';
-import * as trade from './trade.js';
-import * as military from './military.js';
+import { canFoundAt, analyzeSite, pickStartSites } from '../world/sites.js';
+import { kingdomNames } from '../world/names.js';
+import { B, isOpenWater } from '../world/biomes.js';
+import { occupiedWorldCells } from '../settlement/planner.js';
+import { TICK, RULES, TOWN_LEVELS } from './defs.js';
+import * as attacks from './attack.js';
+import * as naval from './naval.js';
+import * as diplomacy from './diplomacy.js';
+import * as structures from './structures.js';
 import { applyCommand } from './commands.js';
 import { thinkAI } from '../ai/ai.js';
 
-export const KINGDOM_COLORS = ['#d23c3c', '#3a68d8', '#e6b422', '#8e44c4', '#20a68c', '#e0702a', '#e05a9a', '#6c7a2a', '#3cb4e6', '#a05a32', '#f0f0f0', '#404048'];
+const BASE_COLORS = ['#d23c3c', '#3a68d8', '#e6b422', '#8e44c4', '#20a68c', '#e0702a', '#e05a9a', '#7a9a2a', '#3cb4e6', '#a05a32', '#5a5ae0', '#c0306a', '#2e8a4a', '#d8d040', '#7a4ab0', '#e09a6a', '#40c0a0', '#b04030', '#6a8ae0', '#c070d0', '#909090', '#2a6a8a', '#d0a0a0', '#5a3a2a'];
+
+/** A distinct colour for every player slot. */
+export function playerColor(i) {
+  if (i < BASE_COLORS.length) return BASE_COLORS[i];
+  // Beyond the hand-picked palette: golden-angle hues, alternating lightness.
+  const h = (i * 137.508) % 360;
+  const l = i % 2 ? 0.45 : 0.6;
+  const s = 0.6;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  };
+  return `#${[f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+export const KINGDOM_COLORS = BASE_COLORS;
+
+// Cost of taking a tile, by biome: open ground is quick, mountains are slow.
+const TERRAIN = new Map([
+  [B.RIVER, 1.8], [B.BEACH, 1], [B.GRASS, 1], [B.MEADOW, 1], [B.FOREST, 1.3], [B.TAIGA, 1.35], [B.MARSH, 1.6],
+  [B.DESERT, 1.1], [B.HILLS, 1.5], [B.MOUNTAIN, 2.2], [B.PEAK, 3], [B.SNOW, 1.4], [B.ASH, 1.3],
+]);
+
+export const PERSONALITIES = ['builder', 'merchant', 'warlord'];
+const W_BIG = 1 << 20; // empty bounding box
 
 export class Match {
   /**
-   * opts: { seed, size, players: [{ name, ai?, personality? }], placementTime, timeLimit, hubs }
+   * opts: { seed, size, players: [{ name, ai?, personality? }], placementTime, timeLimit }
    */
   constructor(opts = {}) {
     const seed = opts.seed ?? 1;
     const size = opts.size || 'medium';
-    this.opts = { placementTime: 30, timeLimit: 45 * 60, hubs: { test: 2, small: 3, medium: 4, large: 5 }[size] || 4, ...opts, seed, size };
+    this.opts = { placementTime: 20, timeLimit: 20 * 60, ...opts, seed, size };
     const dims = WORLD_SIZES[size] || WORLD_SIZES.medium;
     this.world = opts.world || generateWorld({ seed, ...dims });
     this.rng = new Rng(seed ^ 0x5eed);
     const W = this.world.width;
     const H = this.world.height;
+    this.W = W;
+    this.H = H;
     this.search = new GridSearch(W, H);
     this.layouts = new Map();
-    this.owner = new Int32Array(W * H).fill(-1); // settlement id owning each tile
-    this.ownerK = new Int8Array(W * H).fill(-1); // kingdom id (-1 none, -2 neutral hub)
-    this.roads = new Uint8Array(W * H); // kingdom-built roads
-    this.roadMask = new Uint8Array(W * H); // any road (kingdom + settlement streets)
-    this.struct = new Uint8Array(W * H); // settlement structures (buildings, fields...)
-    this.explored = [];
-    this.pathCache = new Map();
+    this.owner = new Int16Array(W * H).fill(-1);
+    this.struct = new Uint8Array(W * H); // planner structures, so layouts never overlap
+    this.analyzeTerrain();
+    // Tiles changed since the start, for clients (engine/net/protocol.js).
+    this.changeLog = [];
+    this.changeSeq = 0;
+    this.structAt = new Map();
+    this.tradePaths = new Map();
     this.queue = [];
-    this.territoryDirty = true;
     this.listeners = new Set();
     // Loading a saved game (engine/sim/persist.js) fills in the rest.
     if (opts.restore) return;
-    const names = kingdomNames(seed, opts.players?.length || 1);
+    const n = opts.players?.length || 1;
+    const names = kingdomNames(seed, n);
     this.state = {
       seed,
       size,
@@ -58,60 +87,100 @@ export class Match {
       tick: 0,
       phase: 'placement',
       placementLeft: this.opts.placementTime,
-      kingdoms: [],
-      settlements: [],
-      armies: [],
-      parties: [],
-      roadJobs: [],
-      agreements: [],
-      proposals: [],
-      hubs: [],
-      market: { stock: {}, price: {} },
+      players: [],
+      structures: [],
+      attacks: [],
+      boats: [],
+      alliances: [],
+      requests: [],
       events: [],
+      survey: null,
       winner: null,
       nextId: 1,
-      territoryV: 0,
-      roadsV: 0,
+      structV: 0,
     };
-    (opts.players || [{ name: 'You' }]).forEach((p, k) => {
-      this.state.kingdoms.push(this.newKingdom(k, p.name || names[k], p, names[k]));
-      // No fog of war: every realm sees the whole map (kept as a mask for saves and site surveys).
-      this.explored.push(new Uint8Array(W * H).fill(1));
-    });
-    trade.initMarket(this);
-    // Neutral free cities, grown to full size at the start.
-    const hubSites = pickTradeHubs(this.world, this.opts.hubs);
-    for (const h of hubSites) this.createHub(h.x, h.y);
-    this.startSites = pickStartSites(this.world, Math.max(10, this.state.kingdoms.length * 2), this.state.hubs);
-    this.recomputeTerritory();
+    (opts.players || [{ name: 'You' }]).forEach((p, k) => this.state.players.push(this.newPlayer(k, p, names[k] || `Realm ${k + 1}`)));
+    this.startSites = pickStartSites(this.world, Math.max(8, Math.min(16, n * 2)));
   }
 
-  newKingdom(id, name, p, realm) {
+  newPlayer(id, p, realm) {
     return {
       id,
-      name: p.name || name,
-      realm: realm || name,
-      color: KINGDOM_COLORS[id % KINGDOM_COLORS.length],
+      name: p.name || realm,
+      color: playerColor(id),
       ai: !!p.ai,
-      personality: p.personality || (p.ai ? ['builder', 'merchant', 'warlord'][id % 3] : null),
+      personality: p.personality || (p.ai ? PERSONALITIES[id % 3] : null),
       alive: true,
-      placed: false,
-      capital: -1,
-      stock: { food: 160, wood: 160, stone: 40, iron: 16 },
-      coin: 160,
-      priorities: { food: 3, wood: 2, stone: 2, iron: 2, build: 3 },
-      relations: {},
-      orders: [],
-      rates: {},
-      flags: {},
-      stats: { pop: 0, soldiers: 0, settlements: 0, workers: 0, idle: 0 },
-      score: 0,
-      wonderHeld: 0,
-      domHeld: 0,
-      warWeariness: 0,
-      caravans: 0,
-      ai_: null,
+      spawned: false,
+      pop: 0,
+      troops: 0,
+      workers: 0,
+      maxPop: 0,
+      tiles: 0,
+      gold: 0,
+      goldRate: 0,
+      troopShare: RULES.troopShare,
+      built: { town: 0, port: 0, outpost: 0 },
+      traitorUntil: 0,
+      bbox: [W_BIG, W_BIG, -1, -1],
+      stats: { maxTiles: 0, taken: 0, lost: 0, boats: 0, trade: 0, attacks: 0 },
+      ai_: {},
     };
+  }
+
+  /** Static per-tile tables: what can be owned, its cost, water bodies and coasts. */
+  analyzeTerrain() {
+    const { W, H } = this;
+    const biome = this.world.biome;
+    const n = W * H;
+    this.land = new Uint8Array(n);
+    this.terr = new Float32Array(n);
+    let land = 0;
+    for (let i = 0; i < n; i++) {
+      if (isOpenWater(biome[i])) continue;
+      this.land[i] = 1;
+      this.terr[i] = TERRAIN.get(biome[i]) || 1;
+      land++;
+    }
+    this.landTotal = land;
+    // Water bodies (4-connected open water) and their sizes.
+    this.water = new Int32Array(n).fill(-1);
+    this.waterSize = [];
+    const stack = [];
+    for (let i = 0; i < n; i++) {
+      if (this.land[i] || this.water[i] >= 0) continue;
+      const id = this.waterSize.length;
+      let size = 0;
+      this.water[i] = id;
+      stack.push(i);
+      while (stack.length) {
+        const j = stack.pop();
+        size++;
+        const x = j % W;
+        const y = (j / W) | 0;
+        if (x > 0 && !this.land[j - 1] && this.water[j - 1] < 0) (this.water[j - 1] = id), stack.push(j - 1);
+        if (x < W - 1 && !this.land[j + 1] && this.water[j + 1] < 0) (this.water[j + 1] = id), stack.push(j + 1);
+        if (y > 0 && !this.land[j - W] && this.water[j - W] < 0) (this.water[j - W] = id), stack.push(j - W);
+        if (y < H - 1 && !this.land[j + W] && this.water[j + W] < 0) (this.water[j + W] = id), stack.push(j + W);
+      }
+      this.waterSize.push(size);
+    }
+    // Coastal land: the largest water body next to it (boats and ports need one).
+    this.coast = new Int32Array(n).fill(-1);
+    for (let i = 0; i < n; i++) {
+      if (!this.land[i]) continue;
+      const x = i % W;
+      const y = (i / W) | 0;
+      let best = -1;
+      for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, y > 0 ? i - W : -1, y < H - 1 ? i + W : -1]) {
+        if (j < 0 || this.land[j]) continue;
+        const b = this.water[j];
+        if (best < 0 || this.waterSize[b] > this.waterSize[best]) best = b;
+      }
+      if (best >= 0 && this.waterSize[best] >= naval.MIN_WATER) this.coast[i] = best;
+    }
+    this.coastTiles = [];
+    for (let i = 0; i < n; i++) if (this.coast[i] >= 0) this.coastTiles.push(i);
   }
 
   // -------------------------------------------------------------------------
@@ -127,340 +196,276 @@ export class Match {
     if (this.state.events.length > 400) this.state.events.splice(0, this.state.events.length - 300);
   }
 
-  /** Count a notable happening for the chronicle's statistics. */
-  tally(key, n = 1) {
-    const t = (this.state.tally ||= {});
-    t[key] = (t[key] || 0) + n;
-  }
-
-  kingdom(kid) {
-    return this.state.kingdoms[kid];
-  }
-
-  settlement(sid) {
-    return this.state.settlements.find((s) => s.id === sid);
+  player(id) {
+    return this.state.players[id];
   }
 
   idx(x, y) {
-    return y * this.world.width + x;
+    return y * this.W + x;
   }
 
-  atWar(a, b) {
-    if (a < 0 || b < 0 || a === b) return false;
-    return this.state.kingdoms[a].relations[b] === 'war';
+  /** Deterministic noise in [0, 1) for a tile and a salt. */
+  noise(i, salt) {
+    return hash3(i, salt, this.state.seed) / 4294967296;
   }
 
-  settlementsOf(kid) {
-    return this.state.settlements.filter((s) => s.kingdom === kid);
+  troops(p) {
+    return p.troops;
   }
 
-  /** Can kingdom kid afford cost (resources + optional coin)? */
-  canAfford(kid, cost, mult = 1) {
-    const k = this.state.kingdoms[kid];
-    for (const [r, v] of Object.entries(cost)) {
-      const have = r === 'coin' ? k.coin : k.stock[r] || 0;
-      if (have + 1e-9 < v * mult) return false;
+  allied(a, b) {
+    return diplomacy.allied(this, a, b);
+  }
+
+  /** Does tile i have a 4-neighbour owned by p? */
+  touches(i, p) {
+    const { W, owner } = this;
+    const x = i % W;
+    return (x > 0 && owner[i - 1] === p) || (x < W - 1 && owner[i + 1] === p) || (i >= W && owner[i - W] === p) || (i + W < owner.length && owner[i + W] === p);
+  }
+
+  /** Change a tile's owner, with all bookkeeping. */
+  setOwner(i, p) {
+    const old = this.owner[i];
+    if (old === p) return;
+    const ps = this.state.players;
+    if (old >= 0) {
+      ps[old].tiles--;
+      ps[old].stats.lost++;
     }
-    return true;
-  }
-
-  pay(kid, cost, mult = 1) {
-    const k = this.state.kingdoms[kid];
-    for (const [r, v] of Object.entries(cost)) {
-      if (r === 'coin') k.coin -= v * mult;
-      else k.stock[r] = (k.stock[r] || 0) - v * mult;
+    this.owner[i] = p;
+    if (p >= 0) {
+      const q = ps[p];
+      q.tiles++;
+      q.stats.taken++;
+      if (q.tiles > q.stats.maxTiles) q.stats.maxTiles = q.tiles;
+      const x = i % this.W;
+      const y = (i / this.W) | 0;
+      const bb = q.bbox;
+      if (x < bb[0]) bb[0] = x;
+      if (y < bb[1]) bb[1] = y;
+      if (x > bb[2]) bb[2] = x;
+      if (y > bb[3]) bb[3] = y;
     }
+    this.changeLog.push(i);
+    this.changeSeq++;
+    const sid = this.structAt.get(i);
+    if (sid !== undefined) structures.captured(this, sid, old, p);
   }
 
-  refund(kid, cost, mult = 1) {
-    this.pay(kid, cost, -mult);
-  }
-
-  storageCap(kid) {
-    let cap = RULES.baseStorage;
-    for (const s of this.settlementsOf(kid)) {
-      cap += 120 + s.stage * 80;
+  /** Total town levels a player holds (each adds people and gold). */
+  townLevels(pid) {
+    let n = 0;
+    let pop = 0;
+    for (const s of this.state.structures) {
+      if (s.owner !== pid || s.kind !== 'town') continue;
+      n += s.level;
+      pop += TOWN_LEVELS[s.level].pop;
     }
-    return cap;
+    return { levels: n, pop };
   }
 
   // -------------------------------------------------------------------------
-  // Settlements and layouts
+  // Spawning
 
-  /** Mark other layouts' structures as blocked inside L, and sync world roads. */
-  prepareLayout(L) {
-    markBlocked(L, this.struct, this.world);
-    syncWorldRoads(this.world, L, this.roads);
-  }
-
-  /** After a layout changes: update structure and road masks. */
-  layoutChanged(s) {
-    const L = this.layouts.get(s.id);
-    const W = this.world.width;
-    for (const [x, y] of occupiedWorldCells(L)) if (x >= 0 && y >= 0 && x < W && y < this.world.height) this.struct[y * W + x] = 1;
-    for (let l = 0; l < LN * LN; l++) {
-      if (!L.road[l] && L.occ[l] !== O.PLAZA) continue;
-      const x = L.ox + (l % LN);
-      const y = L.oy + ((l / LN) | 0);
-      if (x >= 0 && y >= 0 && x < W && y < this.world.height) this.roadMask[y * W + x] = 1;
+  /** Why a player cannot start at (x, y), or null. */
+  spawnError(x, y) {
+    if (!canFoundAt(this.world, x, y)) return 'Pick open land to start on.';
+    const i = this.idx(x, y);
+    if (this.owner[i] >= 0) return 'Someone already holds that land.';
+    for (const p of this.state.players) {
+      if (!p.spawned || !p.spawnAt) continue;
+      if (Math.hypot(p.spawnAt[0] - x, p.spawnAt[1] - y) < RULES.spawnSpacing) return 'Too close to another realm.';
     }
-    s.layoutV = L.v;
-    this.recalcHousing(s);
+    const a = analyzeSite(this.world, x, y, { r: 6 });
+    if (a.buildable < 40) return 'Not enough open land for a town.';
+    return null;
   }
 
-  recalcHousing(s) {
-    const L = this.layouts.get(s.id);
-    let h = STAGES[s.stage].baseHousing;
-    let houses = 0;
-    for (const b of L.buildings) {
-      if (b.kind === 'house' && b.state === 'built') {
-        h += HOUSE.capacity[Math.min(3, b.level)];
-        houses++;
+  spawn(pid, x, y) {
+    const p = this.state.players[pid];
+    const R = RULES.spawnRadius;
+    // The land around the town that can be walked to from it (never across water).
+    const start = this.idx(x, y);
+    const queue = [start];
+    const seen = new Set(queue);
+    for (let k = 0; k < queue.length; k++) {
+      const i = queue[k];
+      if (this.owner[i] < 0) this.setOwner(i, pid);
+      const ix = i % this.W;
+      for (const j of [ix > 0 ? i - 1 : -1, ix < this.W - 1 ? i + 1 : -1, i - this.W, i + this.W]) {
+        if (j < 0 || j >= this.owner.length || seen.has(j) || !this.land[j] || this.owner[j] >= 0) continue;
+        const dx = (j % this.W) - x;
+        const dy = ((j / this.W) | 0) - y;
+        if (dx * dx + dy * dy > R * R + 1) continue;
+        seen.add(j);
+        queue.push(j);
       }
     }
-    s.housing = h;
-    s.houses = houses;
+    p.spawned = true;
+    p.spawnAt = [x, y];
+    p.troops = RULES.startPop * p.troopShare;
+    p.workers = RULES.startPop - p.troops;
+    structures.create(this, 'town', pid, x, y, { capital: true });
+    this.updatePeople(p, 0);
+    this.event(-1, 'spawn', `${p.name} rises.`, x, y);
   }
 
-  /** Place a planner structure for a settlement. Returns the layout building or null. */
-  layoutAdd(s, plan, state = 'built') {
-    const L = this.layouts.get(s.id);
-    this.prepareLayout(L);
-    const b = addBuilding(this.world, L, plan, { state });
-    this.layoutChanged(s);
-    return b;
-  }
-
-  layoutStage(s) {
-    const L = this.layouts.get(s.id);
-    this.prepareLayout(L);
-    applyStage(this.world, L, s.stage);
-    this.layoutChanged(s);
-  }
-
-  layoutWalls(s, level) {
-    const L = this.layouts.get(s.id);
-    this.prepareLayout(L);
-    buildWalls(this.world, L, level);
-    this.layoutChanged(s);
-  }
-
-  newSettlement(kid, x, y, { kind = 'town', stage = 0, pop = 10, name = null } = {}) {
-    const id = this.nextId();
-    const b = this.world.biome[this.idx(x, y)];
-    const s = {
-      id,
-      kingdom: kid,
-      name: name || placeName(this.state.seed, id * 7 + x, BIOMES[b].key),
-      x,
-      y,
-      hub: kind === 'hub',
-      capital: kind === 'capital',
-      stage,
-      pop,
-      housing: 0,
-      houses: 0,
-      buildings: {},
-      projects: [],
-      garrison: { militia: 0, inf: 0, arch: 0, siege: 0 },
-      training: [],
-      demob: [],
-      walls: { level: 0, hp: 0 },
-      unrest: 0,
-      siege: null,
-      site: {},
-      jobs: {},
-      out: {},
-      connected: kind === 'capital' || kind === 'hub',
-      founded: this.state.t,
-      full: false,
-      prosperity: 1,
-      layoutV: 0,
-    };
-    const toward = [];
-    const cap = kid >= 0 ? this.settlement(this.state.kingdoms[kid].capital) : null;
-    if (cap) toward.push({ x: cap.x, y: cap.y });
-    const L = createLayout(this.world, { id, cx: x, cy: y, seed: this.state.seed, kind, toward, worldRoads: this.roads, blocked: this.struct });
-    this.layouts.set(id, L);
-    this.state.settlements.push(s);
-    this.layoutChanged(s);
-    this.layoutStage(s);
-    this.territoryDirty = true;
-    return s;
-  }
-
-  createHub(x, y) {
-    const s = this.newSettlement(-2, x, y, { kind: 'hub', stage: 4, pop: 600, name: placeName(this.state.seed, x * 31 + y, 'beach') + ' Free City' });
-    s.kingdom = -2;
-    const plan = ['market', 'temple', 'harbor', 'granary', 'workshop', 'tavern', 'farm', 'farm', 'fishery', 'smithy'];
-    for (let i = 0; i < 46; i++) {
-      this.layoutAdd(s, 'house');
-      if (i % 4 === 1 && plan.length) this.layoutAdd(s, plan.shift());
+  /** Spread-out starting spots for players who did not choose one. */
+  pickSpawn() {
+    const taken = this.state.players.filter((p) => p.spawnAt).map((p) => p.spawnAt);
+    let best = null;
+    for (let k = 0; k < 160; k++) {
+      const x = this.rng.int(8, this.W - 9);
+      const y = this.rng.int(8, this.H - 9);
+      if (this.spawnError(x, y)) continue;
+      let d = Infinity;
+      for (const [tx, ty] of taken) d = Math.min(d, Math.hypot(tx - x, ty - y));
+      if (!taken.length) d = 1000 - Math.hypot(x - this.W / 2, y - this.H / 2);
+      const score = d + this.rng.next() * 6;
+      if (!best || score > best.score) best = { x, y, score };
     }
-    this.layoutWalls(s, 2);
-    s.walls = { level: 2, hp: WALLS[2].hp };
-    this.state.hubs.push({ id: s.id, x: s.x, y: s.y, name: s.name, coastal: !!this.layouts.get(s.id).harbor });
-    return s;
-  }
-
-  /** Found a kingdom's capital (placement phase). */
-  foundCapital(kid, x, y) {
-    const k = this.state.kingdoms[kid];
-    const s = this.newSettlement(kid, x, y, { kind: 'capital', stage: 1, pop: 36 });
-    k.capital = s.id;
-    k.placed = true;
-    s.capital = true;
-    s.connected = true;
-    // The lumber camp first (it needs forest, the most contested ground), then
-    // homes and fields in turn so that neither crowds the other out.
-    for (const plan of ['lumber', 'house', 'house', 'farm', 'house', 'farm', 'house', 'house']) {
-      if (plan === 'house') this.layoutAdd(s, 'house');
-      else if (this.layoutAdd(s, BUILDINGS[plan].plan)) s.buildings[plan] = (s.buildings[plan] || 0) + 1;
-    }
-    s.garrison.inf = 6;
-    economy.computeSite(this, s);
-    this.recalcHousing(s);
-    this.event(-1, 'found', `${k.name} founds the capital ${s.name}.`, x, y);
-    return s;
+    return best;
   }
 
   // -------------------------------------------------------------------------
-  // Territory and vision
+  // People and gold
 
-  recomputeTerritory() {
-    const W = this.world.width;
-    const { biome } = this.world;
-    this.owner.fill(-1);
-    const dist = new Float32Array(W * this.world.height).fill(Infinity);
-    const sources = [];
-    for (const s of this.state.settlements) {
-      const r = s.hub ? 12 : STAGES[s.stage].radius;
-      sources.push({ idx: this.idx(s.x, s.y), cost0: 0, tag: s.id, limit: r });
-    }
-    const cost = (from, to, diag) => {
-      const b = biome[to];
-      if (b === B.SEA || b === B.DEEP || b === B.LAKE) return Infinity;
-      const m = BIOMES[b].move;
-      const step = diag ? 1.414 : 1;
-      if (m === Infinity) return 3 * step; // peaks stop growth quickly but don't cut holes
-      return (b === B.RIVER ? 2.5 : 0.7 + m * 0.3) * step;
-    };
-    this.search.flood({ sources, cost, diag: true, outDist: dist, outTag: this.owner });
-    const kingdomOf = new Map(this.state.settlements.map((s) => [s.id, s.kingdom]));
-    for (let i = 0; i < this.owner.length; i++) {
-      const o = this.owner[i];
-      this.ownerK[i] = o < 0 ? -1 : kingdomOf.get(o);
-    }
-    this.territoryDirty = false;
-    this.state.territoryV++;
-    for (const s of this.state.settlements) economy.computeSite(this, s);
-  }
-
-  // -------------------------------------------------------------------------
-  // Movement costs and paths
-
-  /**
-   * Step cost for a mover profile. profile: { kid, kind: 'army'|'caravan'|'settlers', sea }
-   */
-  moveCost(profile, i) {
-    const b = this.world.biome[i];
-    const onRoad = this.roadMask[i];
-    if (b === B.SEA || b === B.DEEP || b === B.LAKE) return profile.sea ? 0.45 : Infinity;
-    if (b === B.PEAK) return Infinity;
-    if (this.struct[i] && !onRoad && profile.kind !== 'army') return 1.6;
-    let c = BIOMES[b].move;
-    if (b === B.RIVER) c = onRoad ? 0.5 : profile.kind === 'army' ? 6 : 4;
-    else if (onRoad) c = 1 / RULES.roadSpeed;
-    if (profile.kind === 'army' && !profile.ignoreBorders) {
-      const ok = this.ownerK[i];
-      if (ok >= 0 && ok !== profile.kid && !this.atWar(profile.kid, ok)) return Infinity; // peace: borders closed
-    }
-    if (profile.kind === 'caravan') {
-      const ok = this.ownerK[i];
-      if (ok >= 0 && ok !== profile.kid && this.atWar(profile.kid, ok)) return Infinity;
-    }
-    return c;
-  }
-
-  findPath(profile, fromX, fromY, toX, toY, maxNodes = 120000) {
-    const start = this.idx(Math.round(fromX), Math.round(fromY));
-    const goal = this.idx(Math.round(toX), Math.round(toY));
-    const key = `${profile.kind}:${profile.kid}:${profile.sea ? 1 : 0}${profile.ignoreBorders ? 'b' : ''}:${start}:${goal}:${this.state.roadsV}:${this.state.territoryV}`;
-    const hit = this.pathCache.get(key);
-    if (hit !== undefined) return hit;
-    const cost = (from, to, diag) => {
-      const c = this.moveCost(profile, to);
-      return c === Infinity ? Infinity : c * (diag ? 1.414 : 1);
-    };
-    // The start tile may itself be "closed" (an army leaving a town); allow it.
-    const path = this.search.astar({ start, goal, target: goal, cost, diag: true, minStep: 0.5, maxNodes });
-    if (this.pathCache.size > 600) this.pathCache.clear();
-    this.pathCache.set(key, path);
-    return path;
-  }
-
-  /** Total cost of a path (seconds at base speed). */
-  pathCost(profile, path) {
-    let c = 0;
-    for (let k = 1; k < path.length; k++) c += this.moveCost(profile, path[k]);
-    return c;
-  }
-
-  /** Advance a mover along its path. speed in tiles/second on cost-1 ground. */
-  advance(mover, profile, speed, dt) {
-    const W = this.world.width;
-    let budget = speed * dt;
-    while (budget > 0 && mover.path && mover.pi < mover.path.length - 1) {
-      const next = mover.path[mover.pi + 1];
-      const cur = mover.path[mover.pi];
-      const diag = (next % W !== cur % W) && (((next / W) | 0) !== ((cur / W) | 0));
-      const c = this.moveCost(profile, next);
-      if (c === Infinity) {
-        mover.blocked = true;
-        break;
-      }
-      const stepCost = c * (diag ? 1.414 : 1);
-      const need = stepCost * (1 - mover.pf);
-      if (budget >= need) {
-        budget -= need;
-        mover.pi++;
-        mover.pf = 0;
+  updatePeople(p, dt) {
+    const towns = this.townLevels(p.id);
+    p.maxPop = RULES.baseMaxPop + p.tiles * RULES.popPerTile + towns.pop;
+    let pop = p.troops + p.workers;
+    if (dt > 0) {
+      // Growth goes to troops and workers by the slider; above the limit both shrink.
+      if (pop < p.maxPop) {
+        const g = RULES.growth * pop * (1 - pop / p.maxPop) * dt + 2 * dt;
+        p.troops += g * p.troopShare;
+        p.workers += g * (1 - p.troopShare);
       } else {
-        mover.pf += budget / stepCost;
-        budget = 0;
+        const k = 1 - RULES.overflowDecay * dt * (1 - p.maxPop / Math.max(1, pop));
+        p.troops *= k;
+        p.workers *= k;
+      }
+      // People slowly move between the fields and the army to match the slider.
+      pop = p.troops + p.workers;
+      const move = (pop * p.troopShare - p.troops) * Math.min(1, RULES.rebalance * dt);
+      p.troops += move;
+      p.workers -= move;
+    }
+    p.pop = p.troops + p.workers;
+    p.goldRate = p.workers * RULES.goldPerWorker + towns.levels * RULES.goldPerTown;
+    p.gold += p.goldRate * dt;
+  }
+
+  // -------------------------------------------------------------------------
+  // Survey: who borders whom, coasts, label positions (once a second)
+
+  survey() {
+    const { W, H, owner } = this;
+    const ps = this.state.players;
+    const n = ps.length;
+    const N1 = n + 1;
+    const contact = new Int32Array(n * N1); // [p][q+1], q = -1 is unclaimed land
+    const sample = new Int32Array(n * N1).fill(-1); // one target tile per contact
+    const pick = new Float64Array(n * N1);
+    const coast = new Int32Array(n);
+    const bbox = ps.map(() => [W, H, -1, -1]);
+    const land = this.land;
+    const seed = this.state.tick;
+    const touch = (o, j) => {
+      const k = o * N1 + owner[j] + 1;
+      contact[k]++;
+      const r = hash3(j, seed, 77) / 4294967296;
+      if (r >= pick[k]) {
+        pick[k] = r;
+        sample[k] = j;
+      }
+    };
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const o = owner[i];
+        if (o < 0) continue;
+        const bb = bbox[o];
+        if (x < bb[0]) bb[0] = x;
+        if (y < bb[1]) bb[1] = y;
+        if (x > bb[2]) bb[2] = x;
+        if (y > bb[3]) bb[3] = y;
+        if (this.coast[i] >= 0) coast[o]++;
+        if (x < W - 1 && land[i + 1] && owner[i + 1] !== o) touch(o, i + 1);
+        if (x > 0 && land[i - 1] && owner[i - 1] !== o) touch(o, i - 1);
+        if (y < H - 1 && land[i + W] && owner[i + W] !== o) touch(o, i + W);
+        if (y > 0 && land[i - W] && owner[i - W] !== o) touch(o, i - W);
       }
     }
-    if (mover.path && mover.path.length) {
-      const a = mover.path[mover.pi];
-      const b = mover.path[Math.min(mover.path.length - 1, mover.pi + 1)];
-      const ax = a % W;
-      const ay = (a / W) | 0;
-      const bx = b % W;
-      const by = (b / W) | 0;
-      mover.x = ax + (bx - ax) * mover.pf;
-      mover.y = ay + (by - ay) * mover.pf;
+    // contacts[p] = [[q, border length, a tile of q's on the border], ...]
+    const out = { tick: this.state.tick, neutral: [], contacts: [], coast: [...coast], labels: this.state.survey?.labels || [] };
+    for (let p = 0; p < n; p++) {
+      ps[p].bbox = bbox[p];
+      out.neutral.push([contact[p * N1], sample[p * N1]]);
+      const c = [];
+      for (let q = 0; q < n; q++) if (contact[p * N1 + q + 1]) c.push([q, contact[p * N1 + q + 1], sample[p * N1 + q + 1]]);
+      out.contacts.push(c);
     }
-    return !mover.path || mover.pi >= mover.path.length - 1;
+    if (this.state.tick % Math.round(2 / TICK) < Math.round(1 / TICK) || !out.labels.length) out.labels = this.labelSpots();
+    this.state.survey = out;
+  }
+
+  /** Where to write each player's name: the point deepest inside its land. */
+  labelSpots() {
+    const { W, H, owner } = this;
+    const n = W * H;
+    const d = new Uint16Array(n);
+    // Two-pass chamfer distance (3-4) to the nearest tile of another owner.
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        const o = owner[i];
+        if (o < 0 || x === 0 || y === 0 || x === W - 1 || y === H - 1) continue;
+        if (owner[i - 1] !== o || owner[i + 1] !== o || owner[i - W] !== o || owner[i + W] !== o) {
+          d[i] = 3;
+          continue;
+        }
+        d[i] = Math.min(d[i - 1] + 3, d[i - W] + 3, d[i - W - 1] + 4, d[i - W + 1] + 4);
+      }
+    }
+    const ps = this.state.players;
+    const best = ps.map(() => [0, 0, 0]);
+    for (let y = H - 2; y > 0; y--) {
+      for (let x = W - 2; x > 0; x--) {
+        const i = y * W + x;
+        if (!d[i]) continue;
+        const v = Math.min(d[i], d[i + 1] + 3, d[i + W] + 3, d[i + W + 1] + 4, d[i + W - 1] + 4);
+        d[i] = v;
+        const b = best[owner[i]];
+        if (v > b[2]) {
+          b[0] = x;
+          b[1] = y;
+          b[2] = v;
+        }
+      }
+    }
+    return best.map((b, k) => (ps[k].tiles ? [b[0], b[1], Math.round((b[2] / 3) * 10) / 10] : null));
   }
 
   // -------------------------------------------------------------------------
   // Commands and ticking
 
-  /** Queue a command from kingdom kid. Returns { ok, error } after validation. */
-  command(kid, cmd) {
-    this.queue.push({ kid, cmd });
+  /** Queue a command from player pid. */
+  command(pid, cmd) {
+    this.queue.push({ kid: pid, cmd });
     return { ok: true };
   }
 
   /** Apply a command immediately (used by AI, tests and the queue). */
-  exec(kid, cmd) {
+  exec(pid, cmd) {
     try {
-      const r = applyCommand(this, kid, cmd);
+      const r = applyCommand(this, pid, cmd);
       // Rejected commands are reported to human players; AIs simply try something else.
-      if (r && r.error && kid >= 0 && !this.state.kingdoms[kid]?.ai) this.event(kid, 'error', r.error);
+      if (r && r.error && pid >= 0 && !this.state.players[pid]?.ai) this.event(pid, 'error', r.error);
       return r || { ok: true };
     } catch (e) {
-      if (kid >= 0) this.event(kid, 'error', `Command failed: ${e.message}`);
+      if (pid >= 0) this.event(pid, 'error', `Command failed: ${e.message}`);
       return { ok: false, error: e.message };
     }
   }
@@ -473,8 +478,8 @@ export class Match {
     for (const { kid, cmd } of q) this.exec(kid, cmd);
     if (st.phase === 'placement') {
       if (this.opts.placementTime > 0) st.placementLeft -= dt;
-      const humansPlaced = st.kingdoms.every((k) => k.ai || k.placed);
-      if ((this.opts.placementTime > 0 && st.placementLeft <= 0) || (this.opts.placementTime <= 0 && humansPlaced)) this.finishPlacement();
+      const humansIn = st.players.every((p) => p.ai || p.spawned);
+      if ((this.opts.placementTime > 0 && st.placementLeft <= 0) || (this.opts.placementTime <= 0 && humansIn)) this.finishPlacement();
       st.tick++;
       return;
     }
@@ -482,123 +487,85 @@ export class Match {
     st.t += dt;
     st.tick++;
     const every = (sec) => st.tick % Math.round(sec / dt) === 0;
-    economy.tick(this, dt, every(1));
-    expansion.tick(this, dt);
-    trade.tick(this, dt, every(5));
-    military.tick(this, dt);
-    if (this.territoryDirty) this.recomputeTerritory();
-    if (every(1)) this.checkVictory();
-    for (const k of st.kingdoms) {
-      if (!k.ai || !k.alive) continue;
-      if ((st.tick + k.id * 3) % 8 === 0) thinkAI(this, k);
+    for (const p of st.players) if (p.alive) this.updatePeople(p, dt);
+    attacks.tick(this);
+    naval.tick(this, dt);
+    structures.tick(this);
+    if (every(1)) {
+      diplomacy.tick(this);
+      this.survey();
+      this.checkVictory();
     }
+    for (const p of st.players) {
+      if (!p.ai || !p.alive) continue;
+      if ((st.tick + p.id * 3) % 10 === 0) thinkAI(this, p);
+    }
+    if (this.changeLog.length > 400000) this.changeLog.splice(0, this.changeLog.length - 200000);
   }
 
   finishPlacement() {
     const st = this.state;
-    // Humans who didn't choose get the best free suggested site; then AIs.
-    const order = [...st.kingdoms.filter((k) => !k.ai && !k.placed), ...st.kingdoms.filter((k) => k.ai && !k.placed)];
-    for (const k of order) {
-      const site = this.bestFreeSite();
-      if (site) this.foundCapital(k.id, site.x, site.y);
+    // Humans who didn't choose get a spot first, then the AIs.
+    const order = [...st.players.filter((p) => !p.ai && !p.spawned), ...st.players.filter((p) => p.ai && !p.spawned)];
+    for (const p of order) {
+      const s = this.pickSpawn();
+      if (s) this.spawn(p.id, s.x, s.y);
       else {
-        k.alive = false;
-        this.event(-1, 'info', `${k.name} found no land to settle.`);
+        p.alive = false;
+        this.event(-1, 'info', `${p.name} found no land to settle.`);
       }
     }
-    for (const a of st.kingdoms) for (const b of st.kingdoms) if (a !== b) a.relations[b.id] = 'peace';
     st.phase = 'running';
-    this.recomputeTerritory();
-    this.event(-1, 'info', 'The age of kingdoms begins.');
-  }
-
-  /** Validity of a capital location for placement. */
-  placementError(x, y) {
-    if (!canFoundAt(this.world, x, y)) return 'Cannot settle on that terrain.';
-    for (const s of this.state.settlements) {
-      const d = Math.hypot(s.x - x, s.y - y);
-      if (s.hub && d < 26) return 'Too close to a free city.';
-      if (!s.hub && d < 20) return 'Too close to another kingdom.';
-    }
-    const a = analyzeSite(this.world, x, y, { r: 7 });
-    if (a.buildable < 50) return 'Not enough buildable land for a capital.';
-    return null;
-  }
-
-  bestFreeSite() {
-    const free = this.startSites.filter((s) => !this.placementError(s.x, s.y));
-    if (free.length) return this.rng.pick(free.slice(0, Math.max(1, Math.min(4, free.length))));
-    // Fallback: scan for any valid spot.
-    for (let tries = 0; tries < 4000; tries++) {
-      const x = this.rng.int(10, this.world.width - 10);
-      const y = this.rng.int(10, this.world.height - 10);
-      if (!this.placementError(x, y)) return { x, y };
-    }
-    return null;
+    this.survey();
+    this.event(-1, 'info', 'The race for land begins.');
   }
 
   // -------------------------------------------------------------------------
-  // Scoring and victory
-
-  score(k) {
-    let pop = 0;
-    let soldiers = 0;
-    let n = 0;
-    for (const s of this.settlementsOf(k.id)) {
-      pop += s.pop;
-      n++;
-      for (const v of Object.values(s.garrison)) soldiers += v;
-    }
-    for (const a of this.state.armies) if (a.kid === k.id) for (const v of Object.values(a.units)) soldiers += v;
-    let worth = k.coin;
-    for (const r of RES_KEYS) worth += (k.stock[r] || 0) * (this.state.market.price[r] || 1);
-    k.stats.pop = Math.round(pop);
-    k.stats.soldiers = Math.round(soldiers);
-    k.stats.settlements = n;
-    k.score = Math.round(pop + soldiers * 1.5 + n * 25 + worth / 25);
-    return k.score;
-  }
+  // Victory
 
   checkVictory() {
     const st = this.state;
-    for (const k of st.kingdoms) this.score(k);
-    const alive = st.kingdoms.filter((k) => k.alive);
-    for (const k of alive) {
-      const caps = this.settlementsOf(k.id);
-      if (!caps.length && k.placed) {
-        k.alive = false;
-        this.event(-1, 'fall', `${k.name} has fallen.`);
-      }
+    for (const p of st.players) {
+      if (p.alive && p.spawned && p.tiles <= 0) this.eliminate(p);
     }
-    const living = st.kingdoms.filter((k) => k.alive);
-    const total = st.settlements.filter((s) => !s.hub).length;
-    const allPop = living.reduce((a, k) => a + k.stats.pop, 0);
-    for (const k of living) {
-      const mine = this.settlementsOf(k.id).length;
-      if (living.length === 1 && st.kingdoms.length > 1) return this.end(k, 'conquest');
-      // Domination needs most towns and most people, held long enough for rivals to answer.
-      const dominant = living.length > 1 && total >= 8 && mine / total >= RULES.dominationTowns && k.stats.pop >= allPop * RULES.dominationPop;
-      if (dominant) {
-        if (!k.domHeld) this.event(-1, 'war', `${k.name} dominates the realm: unless rivals take towns back within ${RULES.dominationHold / 60} minutes, it wins.`);
-        k.domHeld = (k.domHeld || 0) + 1;
-        if (k.domHeld >= RULES.dominationHold) return this.end(k, 'domination');
-      } else k.domHeld = 0;
-      if (k.wonderHeld >= RULES.wonderHold) return this.end(k, 'prosperity');
-    }
+    const living = st.players.filter((p) => p.alive);
+    if (st.players.length > 1 && living.length === 1) return this.end(living[0], 'conquest');
+    for (const p of living) if (p.tiles >= this.landTotal * RULES.winShare) return this.end(p, 'domination');
     if (this.opts.timeLimit > 0 && st.t >= this.opts.timeLimit) {
-      const best = [...living].sort((a, b) => b.score - a.score)[0];
-      if (best) return this.end(best, 'score');
+      const best = [...living].sort((a, b) => b.tiles - a.tiles)[0];
+      if (best) return this.end(best, 'time');
     }
     return null;
   }
 
-  end(k, how) {
+  eliminate(p) {
+    p.alive = false;
+    p.pop = 0;
+    p.troops = 0;
+    p.workers = 0;
+    this.state.attacks = this.state.attacks.filter((a) => a.from !== p.id);
+    this.state.boats = this.state.boats.filter((b) => b.owner !== p.id);
+    this.state.alliances = this.state.alliances.filter((a) => a.a !== p.id && a.b !== p.id);
+    this.state.requests = this.state.requests.filter((r) => r.from !== p.id && r.to !== p.id);
+    this.event(-1, 'fall', `${p.name} has fallen.`);
+  }
+
+  end(p, how) {
     const st = this.state;
     st.phase = 'over';
-    st.winner = { kid: k.id, how };
-    const text = { conquest: 'conquered every rival', domination: 'rules most of the realm', prosperity: 'built the Grand Exchange and held it', score: 'leads when the chronicle closes' }[how];
-    this.event(-1, 'victory', `${k.name} ${text}.`);
+    st.winner = { kid: p.id, how };
+    const text = { conquest: 'is the last realm standing', domination: `holds ${Math.round(RULES.winShare * 100)}% of all land`, time: 'holds the most land when time runs out' }[how];
+    this.event(-1, 'victory', `${p.name} ${text}.`);
     return st.winner;
   }
-}
 
+  // -------------------------------------------------------------------------
+  // Settlement layouts
+
+  /** After a layout changes: mark its cells so other layouts keep clear. */
+  layoutChanged(s) {
+    const L = this.layouts.get(s.id);
+    for (const [x, y] of occupiedWorldCells(L)) if (x >= 0 && y >= 0 && x < this.W && y < this.H) this.struct[y * this.W + x] = 1;
+    s.layoutV = L.v;
+  }
+}

@@ -1,8 +1,8 @@
-// Saved games. A save holds the match options, the complete game state,
-// every settlement layout, the per-tile masks and the simulation's internal
-// caches that influence later decisions (RNG position, path cache), so that
-// a loaded match continues exactly as the original would have. The world is
-// not stored: it is regenerated from its seed and checked by fingerprint.
+// Saved games. A save holds the match options, the complete game state
+// (attacks keep their frontiers, boats their routes), every settlement
+// layout, the territory and the RNG position, so a loaded match continues
+// exactly as the original would have. The world is not stored: it is
+// regenerated from its seed and checked by fingerprint.
 
 import { Match } from './match.js';
 import { serializeLayout, deserializeLayout } from '../settlement/planner.js';
@@ -10,7 +10,7 @@ import { rle, unrle } from '../core/rle.js';
 import { mix32 } from '../core/rng.js';
 
 export const SAVE_FORMAT = 'realmwright-save';
-export const SAVE_VERSION = 2; // 2: four resources, no fog of war
+export const SAVE_VERSION = 3; // 3: the race for land (territory, troops, boats)
 
 /** A cheap fingerprint of the generated world, to reject mismatched saves. */
 export function worldFingerprint(world) {
@@ -29,16 +29,13 @@ export function saveMatch(m) {
     format: SAVE_FORMAT,
     version: SAVE_VERSION,
     opts: plain(opts),
-    world: { width: m.world.width, height: m.world.height, check: worldFingerprint(m.world) },
+    world: { width: m.W, height: m.H, land: m.landTotal, check: worldFingerprint(m.world) },
     state: plain(m.state),
     rng: [m.rng.a, m.rng.b, m.rng.c, m.rng.d],
     layouts: [...m.layouts.values()].map((L) => plain(serializeLayout(L))),
     startSites: plain(m.startSites),
     queue: plain(m.queue),
-    territoryDirty: m.territoryDirty,
-    paths: [...m.pathCache],
-    tiles: { owner: rle(m.owner), ownerK: rle(m.ownerK), roads: rle(m.roads), roadMask: rle(m.roadMask), struct: rle(m.struct) },
-    explored: m.explored.map((e) => rle(e)),
+    tiles: { owner: rle(m.owner), struct: rle(m.struct) },
   };
 }
 
@@ -47,41 +44,34 @@ export function loadMatch(data, { world } = {}) {
   if (!data || data.format !== SAVE_FORMAT) throw new Error('This is not a Realmwright saved game.');
   if (data.version !== SAVE_VERSION) throw new Error(data.version < SAVE_VERSION ? 'This save is from an older version of the game and cannot be continued.' : `Unsupported save version ${data.version}.`);
   const m = new Match({ ...data.opts, world, restore: true });
-  const W = m.world.width;
-  const H = m.world.height;
-  if (W !== data.world.width || H !== data.world.height || worldFingerprint(m.world) !== data.world.check) {
+  if (m.W !== data.world.width || m.H !== data.world.height || worldFingerprint(m.world) !== data.world.check) {
     throw new Error('The saved world does not match this version of the world generator.');
   }
   m.state = plain(data.state);
   [m.rng.a, m.rng.b, m.rng.c, m.rng.d] = data.rng;
   for (const L of data.layouts) m.layouts.set(L.id, deserializeLayout(plain(L)));
-  const n = W * H;
-  const t = data.tiles;
-  m.owner = unrle(t.owner, Int32Array, n);
-  m.ownerK = unrle(t.ownerK, Int8Array, n);
-  m.roads = unrle(t.roads, Uint8Array, n);
-  m.roadMask = unrle(t.roadMask, Uint8Array, n);
-  m.struct = unrle(t.struct, Uint8Array, n);
-  m.explored = data.explored.map((e) => unrle(e, Uint8Array, n));
+  const n = m.W * m.H;
+  m.owner = unrle(data.tiles.owner, Int16Array, n);
+  m.struct = unrle(data.tiles.struct, Uint8Array, n);
+  for (const s of m.state.structures) m.structAt.set(m.idx(s.x, s.y), s.id);
   m.startSites = plain(data.startSites);
   m.queue = plain(data.queue || []);
-  m.territoryDirty = !!data.territoryDirty;
-  m.pathCache = new Map(data.paths || []);
   return m;
 }
 
 /** Short description for save menus. */
 export function describeSave(data) {
   const st = data.state;
-  const human = st.kingdoms.find((k) => !k.ai) || st.kingdoms[0];
-  const min = Math.floor(st.t / 60);
+  const human = st.players.find((p) => !p.ai) || st.players[0];
+  const land = data.world?.land || st.players.reduce((t, p) => t + p.tiles, 0);
   return {
     name: human ? human.name : '?',
     seed: st.seed,
     size: st.size,
-    minutes: min,
+    minutes: Math.floor(st.t / 60),
     phase: st.phase,
-    kingdoms: st.kingdoms.length,
-    settlements: st.settlements.filter((s) => s.kingdom === (human ? human.id : 0)).length,
+    players: st.players.length,
+    alive: human ? human.alive : false,
+    share: human && land ? Math.round((human.tiles / Math.max(1, land)) * 100) : 0,
   };
 }
