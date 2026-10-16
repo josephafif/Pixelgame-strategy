@@ -484,6 +484,19 @@ function connectHarbor(world, L) {
   return true;
 }
 
+/** Route from an artery's gate without doubling back along the artery itself. */
+function routeFromGate(ctx, L, art, target, opts) {
+  const saved = [];
+  for (const l of art.cells) {
+    if (l === art.gate) continue;
+    saved.push([l, L.occ[l]]);
+    L.occ[l] = O.BUILDING;
+  }
+  const path = route(ctx, L, [art.gate], (l) => l === target, target, opts);
+  for (const [l, o] of saved) L.occ[l] = o;
+  return path;
+}
+
 /** Extend an artery outward to `radius` (deliberate growth at stage-up). */
 function extendArtery(world, L, art, radius) {
   const ctx = ctxOf(world, L);
@@ -496,7 +509,7 @@ function extendArtery(world, L, art, radius) {
   }
   if (target < 0) return false;
   for (const l of art.apron) if (L.occ[l] === O.APRON) L.occ[l] = O.FREE;
-  const path = route(ctx, L, [art.gate], (l) => l === target, target, { cls: ROAD.MAIN, breach: true });
+  const path = routeFromGate(ctx, L, art, target, { cls: ROAD.MAIN, breach: true });
   if (!path) {
     setApron(ctx, L, art);
     return false;
@@ -870,6 +883,7 @@ export function addBuilding(world, L, kind, { state = 'built' } = {}) {
     }
   }
   const sizes = [[w, h], ...(k.alt || [])];
+  let grew = false;
   for (let attempt = 0; attempt < 5; attempt++) {
     let lots = [];
     let fw = w;
@@ -903,10 +917,12 @@ export function addBuilding(world, L, kind, { state = 'built' } = {}) {
     // grow a new street nearer the centre first.
     const sprawl = chosen && k.house && chosen.dist > compactRadius(L) + 3 && attempt < 2;
     if (chosen && !sprawl) return placeBuilding(ctx, L, kind, chosen, extra, state, rnd);
-    if (!growDistrict(world, L, kind, rnd) && !chosen && attempt >= 1) break;
+    const g = growDistrict(world, L, kind, rnd);
+    grew ||= g;
+    if (!g && !chosen && attempt >= 1) break;
   }
   repairLayout(world, L);
-  ctx.failed[kind] = L.v;
+  if (!grew) ctx.failed[kind] = L.v;
   return null;
 }
 
@@ -1408,7 +1424,7 @@ export function buildWalls(world, L, level) {
     }
     if (target < 0) continue;
     for (const l of art.apron) if (L.occ[l] === O.APRON) L.occ[l] = O.FREE;
-    const path = route(ctx, L, [art.gate], (l) => l === target, target, { cls: ROAD.MAIN });
+    const path = routeFromGate(ctx, L, art, target, { cls: ROAD.MAIN });
     if (!path) continue;
     layRoad(L, path, ROAD.MAIN);
     for (const l of path.slice(1)) art.cells.push(l);
