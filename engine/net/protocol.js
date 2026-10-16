@@ -36,13 +36,13 @@ function privateKingdom(k) {
 }
 
 /**
- * Build the snapshot kingdom `kid` may see (kid = -1: spectator sees all).
+ * Build the snapshot for kingdom `kid` (kid = -1: spectator). There is no fog
+ * of war: everyone sees every town and army; only a realm's own stores,
+ * workers and garrisons are private.
  */
 export function snapshot(m, kid) {
   const st = m.state;
   const W = m.world.width;
-  const ex = kid >= 0 ? m.explored[kid] : null;
-  const known = (x, y) => !ex || ex[Math.round(y) * W + Math.round(x)];
   const kingdoms = st.kingdoms.map((k) => {
     const pk = publicKingdom(k);
     if (k.id === kid || kid < 0) Object.assign(pk, privateKingdom(k));
@@ -50,7 +50,6 @@ export function snapshot(m, kid) {
   });
   const settlements = [];
   for (const s of st.settlements) {
-    if (!s.hub && s.kingdom !== kid && !known(s.x, s.y)) continue;
     const mine = s.kingdom === kid || kid < 0;
     const o = {
       id: s.id,
@@ -85,7 +84,7 @@ export function snapshot(m, kid) {
         prosperity: round(s.prosperity, 100),
       });
     } else {
-      // Scouts' reports: a rough idea of the garrison.
+      // Rivals only get a rough idea of a garrison's size.
       o.garrisonApprox = Math.round(total(s.garrison) / 5) * 5;
     }
     settlements.push(o);
@@ -93,7 +92,6 @@ export function snapshot(m, kid) {
   const armies = [];
   for (const a of st.armies) {
     const mine = a.kid === kid || kid < 0;
-    if (!mine && !m.canSee(kid, a.x, a.y)) continue;
     const o = { id: a.id, kid: a.kid, x: round(a.x, 100), y: round(a.y, 100), n: round(total(a.units)), state: a.state };
     if (mine) Object.assign(o, { units: Object.fromEntries(Object.entries(a.units).map(([u, n]) => [u, round(n, 10)])), morale: round(a.morale, 100), supply: round(a.supply), inSupply: a.inSupply, dest: a.dest, target: a.target ?? null });
     armies.push(o);
@@ -101,7 +99,6 @@ export function snapshot(m, kid) {
   const parties = [];
   for (const p of st.parties) {
     const mine = p.kid === kid || kid < 0;
-    if (!mine && !m.canSee(kid, p.x, p.y)) continue;
     parties.push({ id: p.id, kind: p.kind, kid: p.kid, x: round(p.x, 100), y: round(p.y, 100), sea: !!p.sea && m.world.biome[Math.round(p.y) * W + Math.round(p.x)] <= 2, mode: mine ? p.mode : undefined, cargo: mine ? p.cargo : undefined, returning: p.returning });
   }
   const roadJobs = st.roadJobs.filter((r) => r.kid === kid || kid < 0).map((r) => ({ id: r.id, a: r.a, b: r.b, idx: r.idx, len: r.path.length, stalled: !!r.stalled }));
@@ -150,9 +147,7 @@ export class PlayerView {
     this.terrV = -1;
     this.roadsV = -1;
     this.layoutV = new Map();
-    this.exploredSum = -1;
     this.eventSeq = 0;
-    this.lastExploreSend = -99;
   }
 
   messages(full = false) {
@@ -167,20 +162,7 @@ export class PlayerView {
       this.roadsV = st.roadsV;
       out.push({ t: 'roads', v: st.roadsV, data: rle(m.roads) });
     }
-    if (this.kid >= 0 && (full || st.t - this.lastExploreSend >= 2)) {
-      const ex = m.explored[this.kid];
-      let sum = 0;
-      for (let i = 0; i < ex.length; i += 7) sum += ex[i] * (i & 1023);
-      if (full || sum !== this.exploredSum) {
-        this.exploredSum = sum;
-        out.push({ t: 'explored', data: rle(ex) });
-      }
-      this.lastExploreSend = st.t;
-    }
-    const W = m.world.width;
-    const ex = this.kid >= 0 ? m.explored[this.kid] : null;
     for (const s of st.settlements) {
-      if (ex && !s.hub && s.kingdom !== this.kid && !ex[s.y * W + s.x]) continue;
       const L = m.layouts.get(s.id);
       if (!full && this.layoutV.get(s.id) === L.v) continue;
       this.layoutV.set(s.id, L.v);

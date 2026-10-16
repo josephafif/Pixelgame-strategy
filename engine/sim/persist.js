@@ -10,7 +10,7 @@ import { rle, unrle } from '../core/rle.js';
 import { mix32 } from '../core/rng.js';
 
 export const SAVE_FORMAT = 'realmwright-save';
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2; // 2: four resources, no fog of war
 
 /** A cheap fingerprint of the generated world, to reject mismatched saves. */
 export function worldFingerprint(world) {
@@ -45,7 +45,7 @@ export function saveMatch(m) {
 /** Rebuild a match from saveMatch() output (optionally reusing a world). */
 export function loadMatch(data, { world } = {}) {
   if (!data || data.format !== SAVE_FORMAT) throw new Error('This is not a Realmwright saved game.');
-  if (data.version !== SAVE_VERSION) throw new Error(`Unsupported save version ${data.version}.`);
+  if (data.version !== SAVE_VERSION) throw new Error(data.version < SAVE_VERSION ? 'This save is from an older version of the game and cannot be continued.' : `Unsupported save version ${data.version}.`);
   const m = new Match({ ...data.opts, world, restore: true });
   const W = m.world.width;
   const H = m.world.height;

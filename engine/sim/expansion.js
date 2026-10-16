@@ -1,5 +1,5 @@
-// Expansion and infrastructure: settler parties found outposts, scouts
-// explore, and kingdoms build roads (with bridges) between settlements.
+// Expansion and infrastructure: settler parties found outposts, and
+// kingdoms build roads (with bridges) between settlements.
 
 import { B, BIOMES } from '../world/biomes.js';
 import { canFoundAt } from '../world/sites.js';
@@ -10,7 +10,6 @@ export function foundError(m, kid, src, x, y) {
   const W = m.world.width;
   if (x < 3 || y < 3 || x >= W - 3 || y >= m.world.height - 3) return 'Outside the known world.';
   if (!src || src.kingdom !== kid) return 'Choose one of your settlements to send settlers from.';
-  if (!m.explored[kid][y * W + x]) return 'You must explore that land first.';
   if (!canFoundAt(m.world, x, y)) return 'Settlers cannot build on that terrain.';
   const own = m.ownerK[y * W + x];
   if (own !== -1 && own !== kid) return 'That land belongs to someone else.';
@@ -41,20 +40,6 @@ export function orderFound(m, kid, sid, x, y) {
   src.pop -= RULES.settlerPop;
   m.state.parties.push({ id: m.nextId(), kind: 'settlers', kid, x: src.x, y: src.y, path, pi: 0, pf: 0, dest: { x, y }, pop: RULES.settlerPop, from: sid });
   m.event(kid, 'info', `Settlers leave ${src.name}.`, src.x, src.y);
-  return { ok: true };
-}
-
-export function orderScout(m, kid, sid, x, y) {
-  const src = m.settlement(sid);
-  if (!src || src.kingdom !== kid) return { error: 'Choose one of your settlements.' };
-  if (!m.canAfford(kid, RULES.scoutCost)) return { error: 'Scouts need 10 food and 15 coin.' };
-  const active = m.state.parties.filter((p) => p.kid === kid && p.kind === 'scout').length;
-  if (active >= 3) return { error: 'At most three scouting parties at once.' };
-  const profile = { kid, kind: 'scout' };
-  const path = m.findPath(profile, src.x, src.y, x, y);
-  if (!path) return { error: 'No way to get there on foot.' };
-  m.pay(kid, RULES.scoutCost);
-  m.state.parties.push({ id: m.nextId(), kind: 'scout', kid, x: src.x, y: src.y, path, pi: 0, pf: 0, dest: { x, y }, home: sid, returning: false });
   return { ok: true };
 }
 
@@ -115,15 +100,15 @@ export function orderRoad(m, kid, aId, bId) {
 
 export function tick(m, dt) {
   const st = m.state;
-  // Parties: settlers and scouts (caravans are moved by trade.js).
+  // Settler parties (caravans are moved by trade.js).
   for (const p of st.parties.slice()) {
-    if (p.kind !== 'settlers' && p.kind !== 'scout') continue;
+    if (p.kind !== 'settlers') continue;
     const k = st.kingdoms[p.kid];
     if (!k.alive) {
       st.parties = st.parties.filter((q) => q !== p);
       continue;
     }
-    const done = m.advance(p, { kid: p.kid, kind: p.kind }, p.kind === 'scout' ? 1.3 : 0.7, dt);
+    const done = m.advance(p, { kid: p.kid, kind: p.kind }, 0.7, dt);
     if (p.blocked) {
       p.blocked = false;
       const path = m.findPath({ kid: p.kid, kind: p.kind }, p.x, p.y, p.dest.x, p.dest.y);
@@ -137,24 +122,6 @@ export function tick(m, dt) {
       }
     }
     if (!done) continue;
-    if (p.kind === 'scout') {
-      if (!p.returning) {
-        const home = m.settlement(p.home) || m.settlement(k.capital);
-        if (!home) {
-          st.parties = st.parties.filter((q) => q !== p);
-          continue;
-        }
-        p.returning = true;
-        p.dest = { x: home.x, y: home.y };
-        p.path = m.findPath({ kid: p.kid, kind: 'scout' }, p.x, p.y, home.x, home.y) || [];
-        p.pi = 0;
-        p.pf = 0;
-        m.revealAround(p.kid, Math.round(p.x), Math.round(p.y), 10);
-      } else {
-        st.parties = st.parties.filter((q) => q !== p);
-      }
-      continue;
-    }
     // Settlers arrive.
     st.parties = st.parties.filter((q) => q !== p);
     const { x, y } = p.dest;
@@ -171,7 +138,6 @@ export function tick(m, dt) {
     }
     const s = m.newSettlement(p.kid, x, y, { kind: 'outpost', stage: 0, pop: p.pop });
     m.event(p.kid, 'found', `Settlers found the outpost of ${s.name}.`, x, y);
-    m.revealAround(p.kid, x, y, 10);
   }
 
   // Road construction, tile by tile, paid as it goes.

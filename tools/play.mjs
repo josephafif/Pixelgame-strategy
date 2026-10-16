@@ -47,7 +47,6 @@ await page.evaluate(() => {
   const r = window.__realm;
   const cap = r.cw.settlement(r.cw.me.capital);
   for (const kind of ['farm', 'lumber', 'quarry', 'market']) r.transport.command({ type: 'build', sid: cap.id, kind });
-  r.transport.command({ type: 'scout', sid: cap.id, x: cap.x + 30, y: cap.y + 10 });
   r.transport.command({ type: 'priority', cat: 'build', level: 3 });
 });
 await page.waitForTimeout(1500);

@@ -98,11 +98,11 @@ async function run(dev) {
     await shoot(page, `${dev}-13-town-again`);
     await tap(page, '#left [data-grip]');
     await shoot(page, `${dev}-14-town-full`);
-    await tap(page, '[data-act="mode-scout"]');
-    await shoot(page, `${dev}-15-scout-mode`);
+    await tap(page, '[data-act="mode-road"]');
+    await shoot(page, `${dev}-15-road-mode`);
     const box = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
     await page.touchscreen.tap(Math.round(box.w * 0.3), Math.round(box.h * 0.35));
-    await shoot(page, `${dev}-16-scout-preview`);
+    await shoot(page, `${dev}-16-road-preview`);
     await tap(page, '[data-hint="cancel"]');
   }
   // In-game menu.

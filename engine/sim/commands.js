@@ -4,7 +4,7 @@
 
 import { LABOR, STAGES, WALLS } from './defs.js';
 import { orderBuilding, stageUpError } from './economy.js';
-import { orderFound, orderScout, orderRoad } from './expansion.js';
+import { orderFound, orderRoad } from './expansion.js';
 import { orderError, propose, respond } from './trade.js';
 import * as mil from './military.js';
 import { removeBuilding } from '../settlement/planner.js';
@@ -83,8 +83,6 @@ export function applyCommand(m, kid, cmd) {
       return mil.garrisonArmy(m, kid, num(cmd.aid));
     case 'found':
       return orderFound(m, kid, num(cmd.sid), Math.round(num(cmd.x)), Math.round(num(cmd.y)));
-    case 'scout':
-      return orderScout(m, kid, num(cmd.sid), Math.round(num(cmd.x)), Math.round(num(cmd.y)));
     case 'road':
       return orderRoad(m, kid, num(cmd.a), num(cmd.b));
     case 'priority': {

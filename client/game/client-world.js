@@ -23,8 +23,8 @@ export class ClientWorld {
     this.layouts = new Map();
     this.owner = new Int32Array(W * H).fill(-1);
     this.ownerK = new Int8Array(W * H).fill(-1);
-    this.explored = new Uint8Array(W * H);
-    if (this.you < 0) this.explored.fill(1);
+    // No fog of war: the whole map is known to everyone.
+    this.explored = new Uint8Array(W * H).fill(1);
     this.sidKingdom = new Map();
     this.snap = null;
     this.prevSnap = null;
@@ -32,7 +32,6 @@ export class ClientWorld {
     this.dirtyChunks = new Set();
     this.layerDirty = new Set();
     this.territoryDirty = true;
-    this.fogDirty = true;
     this.events = [];
     this.listeners = new Set();
   }
@@ -72,12 +71,6 @@ export class ClientWorld {
           restampArea(this.world, this.ov, all, x - 1, y - 1, x + 1, y + 1);
           this.markArea(x, y, x, y);
         }
-        break;
-      }
-      case 'explored': {
-        this.explored = unrle(msg.data, Uint8Array, this.W * this.H);
-        this.fogDirty = true;
-        this.territoryDirty = true;
         break;
       }
       case 'layout': {

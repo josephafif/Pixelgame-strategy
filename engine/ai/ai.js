@@ -18,7 +18,7 @@ const PROFILE = {
 };
 
 function mem(k) {
-  if (!k.ai_) k.ai_ = { lastExpand: -999, lastScout: -999, lastWarCheck: 0, warSince: 0, lastOrders: -999, lastPropose: -999, lastBuild: -999, attacks: {} };
+  if (!k.ai_) k.ai_ = { lastExpand: -999, lastWarCheck: 0, warSince: 0, lastOrders: -999, lastPropose: -999, lastBuild: -999, attacks: {} };
   return k.ai_;
 }
 
@@ -29,13 +29,11 @@ function soldiers(m, k) {
   return n;
 }
 
-/** Closest pair of settlements between two kingdoms, counting only enemy towns a has seen. */
+/** Closest pair of settlements between two kingdoms. */
 function frontier(m, a, b) {
-  const seen = m.explored[a];
   let best = null;
   for (const s of m.settlementsOf(a)) {
     for (const o of m.settlementsOf(b)) {
-      if (seen && !seen[m.idx(o.x, o.y)]) continue;
       const d = Math.hypot(s.x - o.x, s.y - o.y);
       if (!best || d < best.d) best = { d, mine: s, theirs: o };
     }
@@ -61,7 +59,6 @@ export function thinkAI(m, k) {
   setPriorities(m, k, mine);
   develop(m, k, mine, cap, prof, storage);
   if (t - ai.lastExpand > 50) expand(m, k, mine, prof, ai);
-  if (t - ai.lastScout > 45) scout(m, k, cap, ai);
   connectRoads(m, k, mine);
   if (t - ai.lastOrders > 20) manageTrade(m, k, prof, storage, ai);
   military(m, k, mine, cap, prof, ai);
@@ -79,22 +76,14 @@ function setPriorities(m, k, mine) {
   if (k.stock.food < Math.max(60, eat * 60) || (foodRate < 0 && k.stock.food < eat * 150)) ai.hungry = true;
   else if (k.stock.food > eat * 300 || (foodRate >= 0 && k.stock.food > eat * 150)) ai.hungry = false;
   const hungry = !!ai.hungry;
-  const cold = mine.some((s) => s.site.cold);
-  const fuelNeed = (k.need?.fuel || 0) * 120 + 30; // two minutes of heating plus a reserve
-  const fuel = cold && k.stock.fuel < fuelNeed ? 3 : k.stock.fuel < fuelNeed ? 2 : k.stock.fuel < fuelNeed * 2.5 ? 1 : 0;
   set('food', hungry ? 3 : k.stock.food > m.storageCap(k.id) * 0.7 && foodRate > 0 ? 1 : 2);
   // Hunger comes first: wood work yields to the fields until food is secure,
-  // unless wood has run out entirely (nothing can be built, kilns go cold).
+  // unless wood has run out entirely (then nothing can be built at all).
   if (k.stock.wood < 25) ai.woodOut = true;
   else if (k.stock.wood > 90) ai.woodOut = false;
-  set('wood', ai.woodOut ? Math.max(3, fuel) : k.stock.wood < 150 && !hungry ? 3 : 2);
+  set('wood', ai.woodOut ? 3 : k.stock.wood < 150 && !hungry ? 3 : 2);
   set('stone', k.stock.stone < 80 ? 2 : 1);
   set('iron', 2);
-  // Kilns burn wood: keep them going only while fuel is actually wanted.
-  set('fuel', fuel);
-  set('herbs', mine.some((s) => s.stage >= 2) ? 2 : 1);
-  set('crystal', 1);
-  set('industry', 2);
   set('build', 3);
 }
 
@@ -114,7 +103,7 @@ function reserveFor(m, k, mine, cap) {
     const next = STAGES[s.stage + 1];
     if (!next || s.projects.some((p) => p.type === 'stage')) continue;
     const up = next.up;
-    const needsOk = (up.needs || []).every((n) => (n === 'hall' && s.capital) || s.buildings[n]);
+    const needsOk = (up.needs || []).every((n) => s.buildings[n]);
     if (s.pop >= stagePopNeed(s) * 0.9 && needsOk) add(up.cost);
   }
   if (cap && cap.crowded && cap.stage >= 1) add({ wood: 70, food: 60 });
@@ -170,34 +159,21 @@ function develop(m, k, mine, cap, prof, storage) {
     if (s.stage >= 1 && !has('quarry') && (s.site.stone > 0.5 || stoneBlocked) && count(m, k, 'quarry') < 2) wants.push({ s, kind: 'quarry', w: stoneBlocked ? 9 : 7, essential: stoneBlocked });
     if (idle > 8 && has('farm') < Math.min(5, farmCap) && foodProd < foodNeed * 1.4) wants.push({ s, kind: 'farm', w: 5 });
     if (idle > 6 && s.stage >= 1 && has('quarry') < 2 && s.site.stone > 0.35) wants.push({ s, kind: 'quarry', w: 5 });
-    if (s.stage >= 1 && !s.capital && !has('hall') && s.pop > 35) wants.push({ s, kind: 'hall', w: s.stage >= 2 ? 8 : 6, essential: s.stage >= 2 });
     if (s.stage >= 2 && !has('market') && s.pop > 90) wants.push({ s, kind: 'market', w: 8, essential: true });
     if (s.stage >= 1 && s === cap && !has('market')) {
       // The capital keeps its last free slot for a market (see below), so build it then.
       const lastSlot = STAGES[s.stage].maxBuild - Object.entries(s.buildings).reduce((a, [kk, c]) => a + (BUILDINGS[kk] ? c : 0), 0) - s.projects.filter((p) => p.type === 'building').length <= 1;
-      const armsTrade = prof.army > 1.2 && !count(m, k, 'mine');
-      wants.push({ s, kind: 'market', w: k.coin > 350 || lastSlot ? 9 : armsTrade ? 7 : 6 * prof.trade, essential: k.coin > 350 || lastSlot });
+      const ironTrade = prof.army > 1.2 && !count(m, k, 'mine');
+      wants.push({ s, kind: 'market', w: k.coin > 350 || lastSlot ? 9 : ironTrade ? 7 : 6 * prof.trade, essential: k.coin > 350 || lastSlot });
     }
     if (s.stage >= 2 && !has('market') && s.pop > 70) wants.push({ s, kind: 'market', w: 5 });
-    if (s.site.iron > 0 && !has('mine')) wants.push({ s, kind: 'mine', w: 6 });
-    if (s.site.coal > 0 && !has('coalpit') && k.stock.fuel < 60) wants.push({ s, kind: 'coalpit', w: 4 });
-    if (s.site.crystal > 0 && s.stage >= 2 && !has('crystalmine')) wants.push({ s, kind: 'crystalmine', w: 5 });
-    if (s.stage >= 1 && !has('herbalist') && s.site.green > 0.3 && count(m, k, 'herbalist') < 1 + Math.floor(mine.length / 3)) wants.push({ s, kind: 'herbalist', w: k.stock.herbs < 10 && mine.some((q) => q.stage >= 2) ? 7 : 4 });
-    const goodsBlocked = (nextUp?.cost?.goods || 0) > k.stock.goods && count(m, k, 'workshop') === 0;
-    if (s.stage >= 2 && !has('workshop') && count(m, k, 'workshop') < 1 + Math.floor(mine.length / 3)) wants.push({ s, kind: 'workshop', w: goodsBlocked ? 9 : 5, essential: goodsBlocked });
-    const ironSource = k.stock.iron > 15 || count(m, k, 'mine') || (prof.army > 1.2 && count(m, k, 'market'));
-    if (s.stage >= 1 && !has('smithy') && ironSource && count(m, k, 'smithy') < 1 + Math.floor(prof.army)) wants.push({ s, kind: 'smithy', w: prof.army > 1.2 && s === cap ? 8.5 : 4 * prof.army, essential: prof.army > 1.2 && s === cap });
-    if (!has('kiln') && s.site.cold && k.stock.fuel < 40) wants.push({ s, kind: 'kiln', w: 7, essential: true });
-    if (!has('kiln') && count(m, k, 'smithy') && k.stock.fuel < 30 && count(m, k, 'kiln') + count(m, k, 'coalpit') < 1 + Math.floor(mine.length / 4)) wants.push({ s, kind: 'kiln', w: 6 });
-    if (s.stage >= 1 && !has('granary') && k.stock.food > storage * 0.7) wants.push({ s, kind: 'granary', w: 4 });
+    // Iron arms soldiers and builds cities: one mine per realm, a second for warlords or cities.
+    const ironStageNeed = (nextUp?.cost?.iron || 0) > k.stock.iron;
+    if (s.stage >= 1 && s.site.iron > 0 && !has('mine') && count(m, k, 'mine') < (prof.army > 1.2 || mine.some((q) => q.stage >= 3) ? 2 : 1)) wants.push({ s, kind: 'mine', w: ironStageNeed || prof.army > 1.2 ? 8 : 6, essential: ironStageNeed });
     // Every realm wants a barracks in its capital once the first years are over, sooner when threatened.
     const threatened = Object.values(k.relations).includes('war');
     if (s.stage >= 1 && !has('barracks') && s === cap) wants.push({ s, kind: 'barracks', w: threatened ? 11 : m.state.t > 600 ? 8.5 : 4 * prof.army * prof.army, essential: prof.army > 1.2 || m.state.t > 600 || threatened });
     if (s.stage >= 2 && !has('barracks') && s !== cap && prof.army > 1.2) wants.push({ s, kind: 'barracks', w: 4 });
-    if (s.stage >= 2 && !has('temple')) wants.push({ s, kind: 'temple', w: s.stage >= 3 ? 7 : 3 });
-    if (s.stage >= 2 && !has('tavern') && s.pop > 80) wants.push({ s, kind: 'tavern', w: 2 });
-    if (s.stage >= 1 && s.site.coast && !has('harbor') && prof.trade > 1) wants.push({ s, kind: 'harbor', w: 4 });
-    if (s.stage >= 3 && !has('stables') && prof.army > 1.2 && s === cap) wants.push({ s, kind: 'stables', w: 3 });
     if (s === cap && s.stage >= 4 && !has('wonder') && prof.trade > 1) wants.push({ s, kind: 'wonder', w: 12, essential: true });
     // Walls when there is danger nearby.
     const danger = m.state.armies.some((a) => a.kid !== k.id && m.atWar(a.kid, k.id) && Math.hypot(a.x - s.x, a.y - s.y) < 30);
@@ -216,7 +192,7 @@ function develop(m, k, mine, cap, prof, storage) {
   for (const w of wants.slice(0, 6)) {
     const cmd = w.cmd || { type: 'build', sid: w.s.id, kind: w.kind };
     if (w.kind && w.s === cap && !cap.buildings.market && w.kind !== 'market' && slotsLeft(cap) <= 1) continue;
-    if (w.kind && w.s.stage >= 2 && !w.s.capital && !w.s.buildings.hall && w.kind !== 'hall' && slotsLeft(w.s) <= 1) continue;
+    if (w.kind && w.s.stage >= 2 && !w.s.buildings.market && w.kind !== 'market' && slotsLeft(w.s) <= 1) continue;
     if (w.kind && siteFactor(w.s, w.kind) <= 0) continue;
     // Producers of what we are saving for are worth the delay they cause.
     const feedsReserve = w.kind && Object.keys(BUILDINGS[w.kind].out || {}).some((r) => (reserve[r] || 0) > (k.stock[r] || 0));
@@ -260,14 +236,12 @@ function expand(m, k, mine, prof, ai) {
         const x = base.x + dx;
         const y = base.y + dy;
         if (x < 4 || y < 4 || x >= W - 4 || y >= m.world.height - 4) continue;
-        if (!m.explored[k.id][y * W + x]) continue;
         if (foundError(m, k.id, src, x, y)) continue;
-        const a = analyzeSite(m.world, x, y, { r: 7, knownDeposit: (i) => m.explored[k.id][i] });
+        const a = analyzeSite(m.world, x, y, { r: 7 });
         if (a.buildable < 40) continue;
         const s = siteStrengths(a);
-        let score = s.farming * 2 + s.timber + s.highland * (needStone ? 1.5 : 0.8) + s.maritime * prof.trade + s.trade * prof.trade + s.rare;
+        let score = s.farming * 2 + s.timber + s.highland * (needStone ? 1.5 : 0.8) + s.maritime * prof.trade + s.trade * prof.trade;
         if (needIron && a.iron > 0) score += 2;
-        if (a.crystal > 0) score += 1.2;
         score -= Math.hypot(src.x - x, src.y - y) * 0.03;
         if (rival) score -= Math.hypot(rival.s.x - x, rival.s.y - y) * 0.035 * prof.aggression;
         if (!best || score > best.score) best = { x, y, score };
@@ -276,30 +250,6 @@ function expand(m, k, mine, prof, ai) {
   }
   ai.lastExpand = m.state.t;
   if (best) try_(m, k, { type: 'found', sid: src.id, x: best.x, y: best.y });
-}
-
-function scout(m, k, cap, ai) {
-  ai.lastScout = m.state.t;
-  if (m.state.parties.some((p) => p.kid === k.id && p.kind === 'scout')) return;
-  if (!m.canAfford(k.id, RULES.scoutCost)) return;
-  const W = m.world.width;
-  const ex = m.explored[k.id];
-  // Scouts range further as the reign goes on, setting out from any of our towns.
-  const mine = m.settlementsOf(k.id);
-  const reach = 30 + Math.min(100, m.state.t / 8);
-  for (let tries = 0; tries < 24; tries++) {
-    const from = mine[Math.floor(m.rng.next() * mine.length)] || cap;
-    const a = m.rng.next() * Math.PI * 2;
-    const r = 25 + m.rng.next() * reach;
-    const x = Math.round(from.x + Math.cos(a) * r);
-    const y = Math.round(from.y + Math.sin(a) * r);
-    if (x < 3 || y < 3 || x >= W - 3 || y >= m.world.height - 3) continue;
-    const i = y * W + x;
-    if (ex[i]) continue;
-    const b = m.world.biome[i];
-    if (b <= 2) continue;
-    if (try_(m, k, { type: 'scout', sid: from.id, x, y })) return;
-  }
 }
 
 function connectRoads(m, k, mine) {
@@ -325,23 +275,20 @@ function connectRoads(m, k, mine) {
 
 function manageTrade(m, k, prof, storage, ai) {
   ai.lastOrders = m.state.t;
-  const hasMarket = m.settlementsOf(k.id).some((s) => s.buildings.market || s.buildings.harbor);
+  const hasMarket = m.settlementsOf(k.id).some((s) => s.buildings.market);
   if (!hasMarket) return;
   const price = m.state.market.price;
-  const wantKeep = { food: 150, wood: 150, stone: 100, iron: 40, fuel: 40, herbs: 25, crystal: 15, goods: 40, arms: 20 };
+  const wantKeep = { food: 150, wood: 150, stone: 100, iron: 40 };
   const reserve = reserveFor(m, k, m.settlementsOf(k.id), m.settlement(k.capital));
   for (const [r, v] of Object.entries(reserve)) if (wantKeep[r] !== undefined) wantKeep[r] = Math.max(wantKeep[r], v + 20);
   if ((k.rates.food ?? 0) < 0) wantKeep.food = Math.max(wantKeep.food, 250);
-  if (prof.army > 1.2 || Object.values(k.relations).includes('war')) {
-    wantKeep.arms = 30;
-    wantKeep.iron = 60;
-  }
+  if (prof.army > 1.2 || Object.values(k.relations).includes('war')) wantKeep.iron = 70;
   const desired = [];
   for (const r of RES_KEYS) {
     const have = k.stock[r] || 0;
     const surplusAt = Math.max(260, storage * 0.4, (reserve[r] || 0) + 150);
-    if (have > surplusAt && r !== 'arms') desired.push({ res: r, side: 'sell', amount: 40, limit: RESOURCES[r].price * 0.55, keep: Math.round(surplusAt * 0.8) });
-    else if (have < wantKeep[r] * 0.6 && (r !== 'arms' || wantKeep.arms > 20) && k.coin > 150) desired.push({ res: r, side: 'buy', amount: r === 'crystal' ? 6 : 35, limit: RESOURCES[r].price * 1.8, keep: wantKeep[r] });
+    if (have > surplusAt) desired.push({ res: r, side: 'sell', amount: 40, limit: RESOURCES[r].price * 0.55, keep: Math.round(surplusAt * 0.8) });
+    else if (have < wantKeep[r] * 0.6 && k.coin > 150) desired.push({ res: r, side: 'buy', amount: 35, limit: RESOURCES[r].price * 1.8, keep: wantKeep[r] });
   }
   // Replace orders that no longer make sense.
   for (const o of k.orders.slice()) {
@@ -354,7 +301,7 @@ function manageTrade(m, k, prof, storage, ai) {
   // Merchants propose agreements: our surplus for their surplus.
   if (prof.trade > 1 && m.state.t - ai.lastPropose > 120) {
     ai.lastPropose = m.state.t;
-    const surplus = RES_KEYS.filter((r) => (k.stock[r] || 0) > storage * 0.5 && r !== 'arms');
+    const surplus = RES_KEYS.filter((r) => (k.stock[r] || 0) > storage * 0.5);
     const need = RES_KEYS.filter((r) => (k.stock[r] || 0) < wantKeep[r] * 0.6);
     if (surplus.length && need.length) {
       for (const other of m.state.kingdoms) {
@@ -404,14 +351,15 @@ function military(m, k, mine, cap, prof, ai) {
     const have = total(s.garrison) + s.training.reduce((a, q) => a + q.n, 0);
     if (s.buildings.barracks && have < want && (fed || enemies.length)) {
       const n = Math.min(10, want - have);
-      const unit = s.buildings.stables && prof.army > 1.2 && m.rng.next() < 0.3 ? 'cav' : m.rng.next() < 0.35 ? 'arch' : 'inf';
+      // Infantry when there is iron to spare, archers (wood only) otherwise.
+      const unit = m.rng.next() < 0.35 || !m.canAfford(k.id, UNITS.inf.cost, n + 20) ? 'arch' : 'inf';
       if (m.canAfford(k.id, UNITS[unit].cost, n)) m.exec(k.id, { type: 'recruit', sid: s.id, unit, n });
-      else if (m.canAfford(k.id, UNITS.inf.cost, Math.max(1, Math.floor(n / 2)))) m.exec(k.id, { type: 'recruit', sid: s.id, unit: 'inf', n: Math.max(1, Math.floor(n / 2)) });
+      else if (m.canAfford(k.id, UNITS.arch.cost, Math.max(1, Math.floor(n / 2)))) m.exec(k.id, { type: 'recruit', sid: s.id, unit: 'arch', n: Math.max(1, Math.floor(n / 2)) });
     }
     // Emergency levy when besieged.
     if (s.siege && s.garrison.militia < 1 && s.pop > 30) m.exec(k.id, { type: 'levy', sid: s.id });
     // Siege engines for walled enemies.
-    if (enemies.length && s === cap && s.buildings.siegeworks && s.garrison.siege < 2) m.exec(k.id, { type: 'recruit', sid: s.id, unit: 'siege', n: 1 });
+    if (enemies.length && s.stage >= UNITS.siege.needsStage && s.buildings.barracks && s.garrison.siege < 2) m.exec(k.id, { type: 'recruit', sid: s.id, unit: 'siege', n: 1 });
   }
   // Relief: a besieged town is answered by the strongest garrison within reach,
   // which marches on the besiegers and meets them in the field.
@@ -485,7 +433,6 @@ function military(m, k, mine, cap, prof, ai) {
       if (force < 6) continue;
       for (const e of enemies) {
         for (const s of m.settlementsOf(e.id)) {
-          if (!m.explored[k.id][m.idx(s.x, s.y)]) continue;
           const d = Math.hypot(s.x - src.x, s.y - src.y);
           if (d > 130) continue;
           const defence = total(s.garrison) * (s.walls.level && s.walls.hp > 0 ? WALLS[s.walls.level].def : 1) + s.walls.hp / 60;

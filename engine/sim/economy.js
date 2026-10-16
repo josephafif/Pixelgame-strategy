@@ -2,7 +2,7 @@
 // population growth, housing, construction projects and upkeep.
 
 import { B, BIOMES, D, TREE_FEATURES } from '../world/biomes.js';
-import { BUILDINGS, HOUSE, STAGES, RULES, RES_KEYS, UNITS, LABOR, stagePopNeed } from './defs.js';
+import { BUILDINGS, HOUSE, STAGES, RULES, RES_KEYS, RESOURCES, UNITS, LABOR, stagePopNeed } from './defs.js';
 import { completeBuilding, addMarketStalls } from '../settlement/planner.js';
 import * as military from './military.js';
 
@@ -16,12 +16,10 @@ export function computeSite(m, s) {
   let land = 0;
   let trees = 0;
   let rock = 0;
-  let green = 0;
   let water = 0;
   let sea = 0;
-  let cold = 0;
   const ferts = [];
-  const dep = { iron: 0, coal: 0, crystal: 0, herbs: 0, fish: 0, stone: 0 };
+  const dep = { iron: 0, fish: 0, stone: 0 };
   for (let dy = -R; dy <= R; dy++) {
     for (let dx = -R; dx <= R; dx++) {
       const x = s.x + dx;
@@ -44,9 +42,6 @@ export function computeSite(m, s) {
       if (d && known) {
         const amt = world.depAmt[i] / 255;
         if (d === D.IRON) dep.iron += amt;
-        else if (d === D.COAL) dep.coal += amt;
-        else if (d === D.CRYSTAL) dep.crystal += amt;
-        else if (d === D.HERBS) dep.herbs += amt;
         else if (d === D.FISH) dep.fish += amt;
         else if (d === D.STONE) dep.stone += amt;
       }
@@ -56,8 +51,6 @@ export function computeSite(m, s) {
       ferts.push(p.fert);
       if (TREE_FEATURES.has(world.feature[i]) || b === B.FOREST || b === B.TAIGA) trees++;
       if (b === B.HILLS || b === B.MOUNTAIN || b === B.DESERT && p.stone > 0.3) rock++;
-      if (b === B.FOREST || b === B.TAIGA || b === B.MARSH || b === B.MEADOW) green++;
-      if (p.cold || world.temp[i] < 0.22) cold++;
     }
   }
   ferts.sort((a, b) => b - a);
@@ -71,10 +64,6 @@ export function computeSite(m, s) {
     water: water > 0 ? Math.min(1.6, 0.8 + dep.fish * 0.3) : 0,
     coast: sea > 3 ? 1 : 0,
     iron: dep.iron > 0 ? Math.min(1.6, 0.55 + dep.iron * 0.3) : 0,
-    coal: dep.coal > 0 ? Math.min(1.6, 0.55 + dep.coal * 0.3) : 0,
-    crystal: dep.crystal > 0 ? Math.min(1.6, 0.6 + dep.crystal * 0.3) : 0,
-    green: Math.max(0.2, Math.min(1.5, 0.2 + (green / n) * 1.3 + dep.herbs * 0.3)),
-    cold: cold > n * 0.4,
   };
 }
 
@@ -88,9 +77,6 @@ export function siteFactor(s, kind) {
     case 'wood': return s.site.wood;
     case 'stone': return s.site.stone;
     case 'iron': return s.site.iron;
-    case 'coal': return s.site.coal;
-    case 'crystal': return s.site.crystal;
-    case 'green': return s.site.green;
     case 'coast': return s.site.coast;
     default: return 1;
   }
@@ -176,8 +162,9 @@ function prosperityOf(m, s, k) {
     const e = BUILDINGS[kind]?.effect;
     if (e && e.prosperity && n) p += e.prosperity;
   }
-  if (s.stage >= 2) p += k.flags.noHerbs ? -0.1 : 0.08;
-  if (s.stage >= 3) p += k.flags.noGoods ? -0.12 : 0.12;
+  // Larger towns are richer; hunger makes everyone poorer.
+  p += s.stage * 0.03;
+  if (k.flags.starving) p -= 0.2;
   if (k.flags.unpaid) p -= 0.1;
   p -= Math.min(0.3, k.warWeariness * 0.0005);
   if (s.unrest > 0) p -= 0.25;
@@ -206,7 +193,7 @@ export function tick(m, dt, second) {
     let soldiers = 0;
     let workers = 0;
     let idle = 0;
-    const need = { food: 0, fuel: 0, herbs: 0, goods: 0 };
+    const need = { food: 0 };
     for (const s of mine) {
       if (second || !s.jobs.assigned) assignLabor(m, s, k);
       pop += s.pop;
@@ -247,14 +234,11 @@ export function tick(m, dt, second) {
       }
       // Consumption.
       need.food += s.pop * RULES.foodPerPop;
-      if (s.site.cold) need.fuel += s.pop * RULES.fuelPerPopCold;
-      if (s.stage >= 2) need.herbs += s.pop * RULES.herbsPerPop;
-      if (s.stage >= 3) need.goods += s.pop * RULES.goodsPerPop;
       for (const [u, n] of Object.entries(s.garrison)) need.food += n * UNITS[u].food;
       s.prosperity = prosperityOf(m, s, k);
       // Taxes.
       k.coin += s.pop * RULES.taxPerPop * s.prosperity * unrestF * dt;
-      if (s.unrest > 0) s.unrest = Math.max(0, s.unrest - dt * (1 + (s.buildings.temple ? BUILDINGS.temple.effect.unrest : 0)));
+      if (s.unrest > 0) s.unrest = Math.max(0, s.unrest - dt * 1.5);
     }
     // Armies eat from the kingdom while in supply (military.js handles carried supply).
     let coinUp = 0;
@@ -274,9 +258,6 @@ export function tick(m, dt, second) {
       else {
         k.stock[r] = 0;
         if (r === 'food') k.flags.starving = true;
-        if (r === 'fuel') k.flags.cold = true;
-        if (r === 'herbs') k.flags.noHerbs = true;
-        if (r === 'goods') k.flags.noGoods = true;
       }
     }
     k.coin -= coinUp * dt;
@@ -286,8 +267,7 @@ export function tick(m, dt, second) {
     }
     // Spoilage and storage.
     const cap = m.storageCap(k.id);
-    const granaries = mine.reduce((a, s) => a + (s.buildings.granary || 0), 0);
-    k.stock.food *= 1 - 0.0004 * (granaries ? 0.5 : 1) * dt;
+    k.stock.food *= 1 - RESOURCES.food.perish * dt;
     for (const r of RES_KEYS) if (k.stock[r] > cap) k.stock[r] = cap;
     // Growth, housing, projects, training.
     for (const s of mine) {
@@ -333,7 +313,6 @@ function growth(m, s, k, dt) {
   } else if (s.pop > s.housing + 0.5) {
     dp = -(s.pop - s.housing) * 0.03;
   }
-  if (s.site.cold && k.flags.cold) dp -= s.pop * RULES.coldLoss;
   if (s.siege && s.siege.blockade) dp = Math.min(dp, 0);
   s.pop = Math.max(1, s.pop + dp * dt);
 }
@@ -398,7 +377,6 @@ export function finishProject(m, s, k, p) {
       if (p.kind === 'market') addMarketStalls(L);
       m.layoutChanged(s);
       m.event(k.id, 'built', `${BUILDINGS[p.kind].name} completed in ${s.name}.`, s.x, s.y);
-      if (p.kind === 'tower') m.territoryDirty = true;
       break;
     case 'stage':
       s.stage = p.to;
@@ -466,7 +444,6 @@ export function updateConnectivity(m, k) {
       q.push(n);
     }
   }
-  const capHarbor = cap.buildings.harbor > 0;
   for (const s of mine) {
     if (s === cap) continue;
     let ok = false;
@@ -474,7 +451,6 @@ export function updateConnectivity(m, k) {
       ok = true;
       break;
     }
-    if (!ok && capHarbor && s.buildings.harbor > 0) ok = true;
     s.connected = ok;
   }
 }
@@ -514,10 +490,7 @@ export function stageUpError(m, s) {
   const up = next.up;
   const need = stagePopNeed(s);
   if (s.pop < need) return `Needs ${need} people (has ${Math.floor(s.pop)}).`;
-  for (const need of up.needs || []) {
-    if (need === 'hall' && s.capital) continue;
-    if (!s.buildings[need]) return `Needs a ${BUILDINGS[need].name.toLowerCase()}.`;
-  }
+  for (const need of up.needs || []) if (!s.buildings[need]) return `Needs a ${BUILDINGS[need].name.toLowerCase()}.`;
   if (up.connected && !s.connected) return 'Needs a road to the capital.';
   if (!m.canAfford(s.kingdom, up.cost)) return 'Not enough resources.';
   return null;

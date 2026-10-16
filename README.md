@@ -38,14 +38,16 @@ Open <http://localhost:8080> in a browser.
   and walls are laid out by the town planner. You order workplaces and stage upgrades:
   outpost → hamlet → village → town → city.
 - **Workers and soldiers.** People are the workforce. Each soldier is a worker taken off the land.
-  Soldiers need barracks, arms and training time, and they cost food and coin. Militia levies are fast,
+  Soldiers need barracks and training time; infantry costs iron, archers wood. They eat food and draw gold. Militia levies are fast,
   but they are weak and hurt production. Demobilised soldiers return to work gradually.
-- **Expansion is slow and deliberate.** Scouts explore. Settlers (wood, food and people) found outposts
-  in explored land within reach. Roads are built tile by tile and connect towns. Unconnected towns lose
-  part of what they ship.
+- **A small economy.** Four resources (food, wood, stone, iron) plus gold, and eight buildings: farm,
+  fishery, lumber camp, quarry, iron mine, market, barracks and the Grand Exchange.
+- **No fog of war.** Everyone sees the whole map.
+- **Expansion is slow and deliberate.** Settlers (wood, food and people) found outposts within reach.
+  Roads are built tile by tile and connect towns. Unconnected towns lose part of what they ship.
 - **Trade.** Markets send caravans to the free cities, and prices follow supply and demand. You can place
-  standing buy and sell orders and make agreements with other realms. Distance, roads, rivers and
-  harbours set the cost and time of transport.
+  standing buy and sell orders and make agreements with other realms. Distance and roads set the
+  cost and time of transport.
 - **War.** At peace, borders are closed to armies. War opens them. Terrain favours defenders (hills,
   mountains, forest), and rivers without bridges slow attackers. Armies starve outside their supply
   range. Walls must be battered down (siege engines help) before a town can fall. A captured town keeps
@@ -68,7 +70,7 @@ menu.
   down to close it.
 - Drag to pan, pinch or double-tap to zoom, tap to select, and long-press the map to march the selected
   army.
-- Orders on the map (settlers, scouts, roads, marches) show the spot first and wait for you to confirm.
+- Orders on the map (settlers, roads, marches) show the spot first and wait for you to confirm.
 
 ## Development
 
@@ -84,6 +86,7 @@ node tools/play.mjs shots 7 small 60       # drive the real client in headless C
 node tools/save-check.mjs shots            # browser test: save, reload, continue
 node tools/mp-browser.mjs shots            # two browsers in one multiplayer room
 node tools/mobile-shots.mjs shots all       # every menu and panel: phone portrait, landscape, desktop
+node tools/perf-zoom.mjs both              # frame times while zooming and panning (desktop and phone)
 node tools/shoot.mjs "/client/debug/sprites.html?scale=3" out.png 1200 900   # screenshot any page
 ```
 
@@ -105,7 +108,7 @@ engine/   shared, deterministic game logic (no DOM, no Node APIs); runs on the s
   settlement/  road-first settlement planner, building kinds, styles, local terrain, validator
   sim/         Match (authoritative state and ticks), economy, expansion, trade, military, commands, saves
   ai/          AI kingdoms (the same commands as humans)
-  net/         wire protocol: per-player snapshots with fog of war
+  net/         wire protocol: per-player snapshots (private stores stay private)
 server/   HTTP static server, WebSocket server (RFC 6455), rooms and lobby, save store
 client/   browser client: transports, client world, Canvas renderer, DOM UI, debug pages
 tests/    node:test suites

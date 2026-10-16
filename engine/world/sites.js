@@ -69,17 +69,15 @@ export function siteStrengths(a) {
     highland: Math.min(1.5, a.stone / area * 1.2 + a.iron * 0.25 + a.defense * 0.8),
     maritime: (a.sea > 6 ? 0.6 : 0) + Math.min(0.5, a.fish * 0.2) + (a.lake > 6 ? 0.2 : 0),
     trade: (a.river > 2 ? 0.55 : 0) + (a.sea > 6 ? 0.35 : 0) + (a.biomes.meadow ? 0.2 : 0),
-    rare: Math.min(1.5, a.crystal * 0.6 + a.herbs * 0.25 + a.fuel * 0.3),
   };
 }
 
 const ARCHETYPES = {
   farming: { title: 'Breadbasket', blurb: 'Fertile soil feeds a large population.' },
-  timber: { title: 'Timberland', blurb: 'Deep woods for cheap construction and fuel.' },
+  timber: { title: 'Timberland', blurb: 'Deep woods for cheap, fast building.' },
   highland: { title: 'Highland Hold', blurb: 'Stone, iron and natural defences.' },
   maritime: { title: 'Harbour Coast', blurb: 'Fishing grounds and sea trade.' },
-  trade: { title: 'River Crossroads', blurb: 'Rivers carry goods and caravans fast.' },
-  rare: { title: 'Wild Frontier', blurb: 'Rare herbs, coal or crystal nearby.' },
+  trade: { title: 'River Crossroads', blurb: 'Rivers and open land for caravans and growth.' },
 };
 
 export function describeSite(a) {
@@ -91,15 +89,11 @@ export function describeSite(a) {
   if (a.wood / Math.max(1, a.land) > 0.45) pros.push('timber');
   if (a.stone / Math.max(1, a.land) > 0.4) pros.push('stone');
   if (a.iron > 0) pros.push('iron');
-  if (a.fuel > 0) pros.push('coal');
-  if (a.crystal > 0) pros.push('crystal');
-  if (a.herbs > 0) pros.push('herbs');
   if (a.sea > 6) pros.push('coast');
   if (a.river > 2) pros.push('river');
   if (a.defense > 0.3) pros.push('defensible');
   if (a.fert / Math.max(1, a.land) < 0.5) cons.push('poor soil');
   if (a.wood / Math.max(1, a.land) < 0.12) cons.push('little wood');
-  if (a.cold > a.land * 0.4) cons.push('cold: needs fuel');
   if (a.buildable < a.land * 0.5) cons.push('cramped');
   if (a.defense < 0.08) cons.push('open ground');
   const arche = ranked[0][0];

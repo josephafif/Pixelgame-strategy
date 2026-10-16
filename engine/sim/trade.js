@@ -105,7 +105,7 @@ function arriveAtHub(m, c) {
     const p = priceOf(m, c.cargo.res);
     c.coin = c.cargo.n * p * (1 - RULES.marketFee);
     mk.stock[c.cargo.res] += c.cargo.n;
-    m.event(c.kid, 'trade', `Sold ${c.cargo.n} ${c.cargo.res} for ${Math.round(c.coin)} coin.`, c.x, c.y);
+    m.event(c.kid, 'trade', `Sold ${c.cargo.n} ${c.cargo.res} for ${Math.round(c.coin)} gold.`, c.x, c.y);
     k.stats.sold = (k.stats.sold || 0) + c.coin;
     k.stats.trades = (k.stats.trades || 0) + 1;
     c.cargo = null;
@@ -117,7 +117,7 @@ function arriveAtHub(m, c) {
     if (n > 0) {
       k.coin -= n * p;
       mk.stock[c.cargo.res] -= n;
-      m.event(c.kid, 'trade', `Bought ${n} ${c.cargo.res} for ${Math.round(n * p)} coin.`, c.x, c.y);
+      m.event(c.kid, 'trade', `Bought ${n} ${c.cargo.res} for ${Math.round(n * p)} gold.`, c.x, c.y);
       k.stats.bought = (k.stats.bought || 0) + n * p;
       k.stats.trades = (k.stats.trades || 0) + 1;
     }

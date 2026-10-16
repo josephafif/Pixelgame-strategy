@@ -13,8 +13,8 @@ This document explains how the game works and why it is built the way it is. Num
   hashes (`hash3`, `sfc32`). The same seed, the same commands and the same tick count give the same
   match. Tests check this, and saved games depend on it.
 - **AIs play by the human rules.** `engine/ai/ai.js` acts only through `m.exec(kid, command)`. It pays
-  the same costs, waits for the same construction and travel times and sees only what its kingdom has
-  explored.
+  the same costs and waits for the same construction and travel times. There is no fog of war, so
+  everyone, human or AI, sees the same map.
 - **Separated layers.** `engine/` has no DOM and no Node APIs. `server/` adds transport, rooms and save
   files. `client/` adds rendering and UI. Settlement layouts are gameplay data, because they decide where
   buildings stand and where roads run. The client turns them into pixel art.
@@ -96,7 +96,7 @@ The same layout seed and the same sequence of operations always give the same la
 ## Population, work and soldiers (`economy.js`, `military.js`)
 
 - **Labour.** 80% of a settlement's people can work. Workplaces offer job slots by category: food,
-  wood, stone, iron, fuel, herbs, crystal, industry and building. Workers fill high-priority categories
+  wood, stone, iron and building. Workers fill high-priority categories
   first, and equal priorities share workers in proportion to their slots. A starving realm sends
   everyone to the fields. Idle hands forage a little food and gather a little deadwood.
 - **Growth** needs housing and food security. Houses are built automatically while there is room in
@@ -107,52 +107,54 @@ The same layout seed and the same sequence of operations always give the same la
   | --- | --- |
   | outpost → hamlet | 18 people, wood |
   | hamlet → village | 40 people, wood, stone |
-  | village → town | 100 people, market and hall, goods |
-  | town → city | 220 people, temple, road to the capital, stone, goods, iron, crystal |
+  | village → town | 100 people, a market, wood, stone |
+  | town → city | 220 people, a market, a road to the capital, stone, iron |
 
   Each stage claims more land and allows more buildings and houses. A settlement that has run out of
   room may grow a stage at three quarters of the usual population.
 - **Soldiers come from the workforce.**
-  - Recruiting needs barracks (10 recruits training at once), arms (and iron, wood or food for some
-    units) and training time: 20–40 s.
+  - Recruiting needs barracks (10 recruits training at once), equipment and training time: 18–40 s.
+    Infantry costs 1 iron each, archers 4 wood, siege engines 40 wood and 10 iron (towns and cities
+    only).
   - Every recruit leaves the workforce immediately.
-  - Soldiers eat food and cost coin every second; unpaid soldiers lose morale and desert.
+  - Soldiers eat food and cost gold every second; unpaid soldiers lose morale and desert.
   - A militia levy takes up to 15% of the people in 6 s. It is weak, and production suffers.
-  - Demobilising returns 70% of the arms, and the people go back to work after 12 s.
+  - Demobilising returns 70% of the equipment, and the people go back to work after 12 s.
 
-## Economy and production chains
+## Economy
 
-| Building | Output | Needs |
+The economy is deliberately small: four resources plus gold, and eight buildings.
+
+| Resource | Used for |
+| --- | --- |
+| Food | feeding people and soldiers |
+| Wood | houses, buildings, roads, archers |
+| Stone | bigger towns, walls, bridges |
+| Iron | infantry, siege engines, cities |
+| Gold | taxes and trade; pays soldiers |
+
+| Building | Does | Needs |
 | --- | --- | --- |
 | Farm | food | fertile land |
 | Fishery | food | coast, lake or river |
 | Lumber camp | wood | forest |
 | Quarry | stone | rock, hills |
-| Iron mine | iron | iron vein |
-| Coal pit | fuel | coal seam |
-| Charcoal kiln | fuel | burns wood |
-| Herbalist | herbs | green land |
-| Crystal mine | crystal | crystal geode |
-| Workshop | goods | wood + iron |
-| Smithy | arms | iron + fuel + wood |
+| Iron mine | iron | an iron vein (hamlet or larger) |
+| Market | caravans to the free cities, richer townsfolk | hamlet or larger, one per town |
+| Barracks | trains soldiers | hamlet or larger |
+| Grand Exchange | the prosperity victory | the capital, as a city |
 
-People consume:
-
-- food, everywhere;
-- fuel, in cold towns;
-- herbs, from village size;
-- goods, from town size.
-
-Shortages lower prosperity, which lowers taxes and growth. Output scales with the settlement's site
-survey (fertility, forest cover, deposits). Towns without a road to the capital lose 15–40% of what
-they ship. Storage grows with stages and granaries, and food spoils slowly.
+People only eat food. Prosperity rises with town size and markets and falls with hunger, unpaid
+soldiers, war weariness and unrest; it sets taxes and growth. Output scales with the settlement's
+site survey (fertility, forest cover, deposits). Towns without a road to the capital lose 15–40% of
+what they ship. Storage grows with stages, and food spoils slowly.
 
 ## Expansion (`expansion.js`)
 
-- **Scouts** reveal the map. Fog of war is per kingdom.
+- **No fog of war.** The whole map, every town and every army is visible to everyone.
 - **Settlers** cost 60 wood, 50 food and 12 people from a settlement of at least 40. They walk
-  to an explored, valid site within reach and found an outpost with 12 people, which starts small
-  and grows like any town.
+  to a valid site within reach and found an outpost with 12 people, which starts small and grows
+  like any town.
 - **Roads** are surveyed with A*, paid in wood (and stone for bridges), and built tile by tile by the
   connected settlements' builders. Roads double movement speed and link towns to the capital for
   logistics.
@@ -163,8 +165,8 @@ they ship. Storage grows with stages and granaries, and food spoils slowly.
   `price = base × (equilibrium / stock)^0.75`, clamped to 0.3–4 × base. Selling raises the stock and
   lowers the price; stocks drift back toward equilibrium over time.
 - **Orders.** Standing buy and sell orders (amount, price limit, stock level to keep) are carried out
-  by caravans. A market supports two caravans and a harbour one. Caravans carry 40 units, take real
-  travel time over roads or by sea between harbours, and pay a fare per tile. At war, enemy armies can
+  by caravans. Each market supports two caravans. Caravans carry 40 units, take real travel time
+  over land (faster on roads), and pay a fare per tile. At war, enemy armies can
   seize them.
 - **Agreements** are proposed between realms: give X every N seconds for Y, a number of times. They are
   delivered by caravan, and they stop at war or when a side cannot pay.
@@ -179,7 +181,6 @@ they ship. Storage grows with stages and granaries, and food spoils slowly.
   | --- | --- |
   | infantry | solid all-round |
   | archers | strong defenders |
-  | cavalry | strong on open ground, weak in rough terrain; needs stables |
   | siege engines | break walls; need siege works, crewed by 3 |
   | militia | levy |
 
@@ -217,18 +218,18 @@ Each AI thinks every 2 s with a personality:
 
 - **builder:** steady growth and expansion;
 - **merchant:** trade, agreements and the Grand Exchange;
-- **warlord:** early arms, forward settling and attacks.
+- **warlord:** an early army, forward settling and attacks.
 
 It does the following:
 
 - **Labour priorities.** It sets them from its stocks. Hunger and wood shortage use hysteresis, so
-  workers don't flip-flop, and kilns idle when fuel is plentiful.
+  workers don't flip-flop.
 - **Development.** It ranks wanted buildings and stage-ups and saves for the most important. Producers
   of a resource it is saving for get to skip the savings.
-- **Expansion.** It sends settlers to the best explored sites. Warlords favour sites toward their
+- **Expansion.** It sends settlers to the best sites in reach. Warlords favour sites toward their
   weakest neighbour.
 - **Trade.** Surpluses go to market, shortages are bought, and merchants propose agreements.
-- **War.** It declares war on weaker neighbours near its explored frontier. It attacks the weakest town
+- **War.** It declares war on weaker neighbours near its frontier. It attacks the weakest town
   in reach from its best-held town, relieves its own besieged towns, offers or accepts peace when
   losing or weary, and keeps its army within the upkeep it can afford.
 
@@ -241,10 +242,10 @@ The server sends each player:
 
 - an `init` with the seed, size and suggested sites. The client regenerates the terrain locally from
   the seed instead of downloading it;
-- a `snap` every 0.5 s with public kingdom data, that player's private stocks, visible settlements,
-  armies and parties (fog of war), and new events tracked by sequence number;
-- versioned bulk messages (`terr`, `roads`, `explored`, `layout`), run-length encoded and only when
-  they change.
+- a `snap` every 0.5 s with public kingdom data, that player's private stocks, all settlements,
+  armies and parties (no fog of war; rivals' garrisons are only estimated), and new events tracked
+  by sequence number;
+- versioned bulk messages (`terr`, `roads`, `layout`), run-length encoded and only when they change.
 
 Clients send `{ t: 'cmd', cmd }`. Commands are rate-limited and validated by the same code path the AI
 uses.
@@ -281,7 +282,11 @@ No image assets are used.
 
 - **Terrain chunks** (32×32 tiles at 16 px per tile) are painted per pixel. They have ragged, noisy
   biome borders, smooth river channels, relief lighting interpolated per tile, shore foam, ground
-  speckles, tufts and flowers. Chunks are cached and built a few per frame.
+  speckles, tufts and flowers. Chunks and settlement pictures are painted by a pool of up to three
+  workers (`paint-pool.js`, `paint-worker.js`) into OffscreenCanvas and returned as ImageBitmaps, so
+  zooming and panning never wait for pixel work. The renderer asks for what is nearest the centre of
+  the view first, plus a ring of chunks ahead; until a picture arrives, the old one or the overview
+  stands in. `tools/perf-zoom.mjs` measures frame times over a scripted zoom-and-pan.
 - **Nature** (`nature.js`): deciduous and pine trees, palms, dead trees, rocks, reeds, cacti and snowy
   variants, each with outlines and shadows.
 - **Buildings** (`buildings.js`): every kind in every style and level. Examples are pitched, thatched,
@@ -289,7 +294,7 @@ No image assets are used.
   walls with towers. Walls, gates, palisades, piers, fields and decor come from `decor.js`.
   `settlement-layer.js` prerenders each settlement, y-sorted, and rebuilds it only when its layout
   version changes.
-- **Overlays:** territory fill and borders, fog of war, armies, caravans and selections.
+- **Overlays:** territory fill and borders (cached paths per colour), armies, caravans and selections.
 - **Zoomed out:** a one-pixel-per-tile strategic overview with labels, plus a minimap.
 
 `client/debug/` has pages for inspecting terrain, settlement growth in every style and sprite sheets.

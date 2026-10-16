@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Match } from '../engine/sim/match.js';
-import { TICK, UNITS, RULES, WALLS } from '../engine/sim/defs.js';
+import { TICK, UNITS, RULES, WALLS, RES_KEYS, BUILDINGS, LABOR } from '../engine/sim/defs.js';
+import { snapshot } from '../engine/net/protocol.js';
 import { canFoundAt } from '../engine/world/sites.js';
 import { B } from '../engine/world/biomes.js';
 import { priceOf } from '../engine/sim/trade.js';
@@ -90,20 +91,24 @@ test('recruiting needs barracks, equipment and capacity, and takes time', () => 
   const c = cap(m, 0);
   assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 4 }).error, /barracks/);
   c.buildings.barracks = 1;
-  k.stock.arms = 2;
+  k.stock.iron = 2;
   assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 4 }).error, /equipment/);
-  k.stock.arms = 100;
+  k.stock.iron = 100;
   assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 11 }).error, /train 10 at once/);
   const pop0 = c.pop;
   const inf0 = c.garrison.inf;
   assert.ok(m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 8 }).ok);
-  assert.equal(k.stock.arms, 92);
+  assert.equal(k.stock.iron, 92);
   assert.ok(Math.abs(c.pop - (pop0 - 8)) < 1e-9, 'recruits leave the workforce at once');
   run(m, UNITS.inf.train - 2);
   assert.equal(c.garrison.inf, inf0, 'still training');
   run(m, 3);
   assert.equal(c.garrison.inf, inf0 + 8, 'trained');
-  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'cav', n: 1 }).error, /stables/);
+  // Archers need only wood; siege engines need a town.
+  k.stock.wood = 100;
+  assert.ok(m.exec(0, { type: 'recruit', sid: c.id, unit: 'arch', n: 2 }).ok);
+  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'siege', n: 1 }).error, /towns and cities/);
+  assert.match(m.exec(0, { type: 'recruit', sid: c.id, unit: 'cav', n: 1 }).error, /Unknown unit/);
 });
 
 test('drafting workers reduces production', () => {
@@ -117,7 +122,7 @@ test('drafting workers reduces production', () => {
   run(m, 1.5);
   const before = c.out.food || 0;
   c.buildings.barracks = 1;
-  k.stock.arms = 100;
+  k.stock.iron = 100;
   m.exec(0, { type: 'recruit', sid: c.id, unit: 'inf', n: 10 });
   m.exec(0, { type: 'levy', sid: c.id });
   run(m, 1.5);
@@ -317,7 +322,7 @@ test('defenders on hills hold better than on open grass', async () => {
   };
   const fight = (spot) => {
     m.state.armies = [];
-    const mk = (kid, x, y) => ({ id: m.nextId(), kid, x, y, units: { militia: 0, inf: 30, arch: 0, cav: 0, siege: 0 }, path: null, pi: 0, pf: 0, dest: null, supply: 90, morale: 1, state: 'idle', inSupply: true, home: -1, retreatT: 0 });
+    const mk = (kid, x, y) => ({ id: m.nextId(), kid, x, y, units: { militia: 0, inf: 30, arch: 0, siege: 0 }, path: null, pi: 0, pf: 0, dest: null, supply: 90, morale: 1, state: 'idle', inSupply: true, home: -1, retreatT: 0 });
     const def = mk(1, spot.x, spot.y);
     const att = mk(0, spot.x + 1, spot.y);
     att.path = [spot.y * W + spot.x + 1, spot.y * W + spot.x];
@@ -336,11 +341,11 @@ test('walls must be breached before capture; capture moves ownership and causes 
   const A = m.state.kingdoms[0];
   const Bk = m.state.kingdoms[1];
   b.walls = { level: 1, hp: WALLS[1].hp };
-  b.garrison = { militia: 0, inf: 3, arch: 0, cav: 0, siege: 0 };
+  b.garrison = { militia: 0, inf: 3, arch: 0, siege: 0 };
   m.state.t = 200;
   m.exec(0, { type: 'declareWar', to: 1 });
   Bk.stock.wood = 400;
-  const army = { id: m.nextId(), kid: 0, x: b.x + 1, y: b.y + 1, units: { militia: 0, inf: 40, arch: 0, cav: 0, siege: 2 }, path: null, pi: 0, pf: 0, dest: null, supply: 90, morale: 1, state: 'idle', inSupply: true, home: -1, retreatT: 0 };
+  const army = { id: m.nextId(), kid: 0, x: b.x + 1, y: b.y + 1, units: { militia: 0, inf: 40, arch: 0, siege: 2 }, path: null, pi: 0, pf: 0, dest: null, supply: 90, morale: 1, state: 'idle', inSupply: true, home: -1, retreatT: 0 };
   m.state.armies.push(army);
   run(m, 3);
   assert.ok(b.siege, 'siege begins');
@@ -431,4 +436,45 @@ test('domination must be held: most towns and people for several minutes', () =>
   for (const s of m.state.settlements) if (s.kingdom === 1 && !s.capital) s.kingdom = 0;
   for (let i = 0; i <= RULES.dominationHold; i++) m.checkVictory();
   assert.deepEqual(m.state.winner, { kid: 0, how: 'domination' });
+});
+
+test('the economy is small: four resources, eight buildings, five kinds of work', () => {
+  assert.deepEqual(RES_KEYS, ['food', 'wood', 'stone', 'iron']);
+  assert.deepEqual(Object.keys(BUILDINGS), ['farm', 'fishery', 'lumber', 'quarry', 'mine', 'market', 'barracks', 'wonder']);
+  assert.deepEqual(LABOR, ['food', 'wood', 'stone', 'iron', 'build']);
+  // Every cost and output uses only those resources (or gold).
+  for (const def of [...Object.values(BUILDINGS), ...Object.values(UNITS)]) {
+    for (const r of Object.keys({ ...def.cost, ...def.out })) assert.ok(RES_KEYS.includes(r) || r === 'coin', `${def.name}: ${r}`);
+  }
+});
+
+test('there is no fog of war: every realm sees every town and army', () => {
+  const m = twoKingdoms();
+  const theirs = cap(m, 1);
+  theirs.garrison.inf = 6;
+  assert.ok(m.exec(1, { type: 'formArmy', sid: theirs.id }).ok);
+  run(m, 2);
+  const snap = snapshot(m, 0);
+  assert.ok(snap.settlements.some((s) => s.id === theirs.id), 'the rival capital is visible');
+  assert.equal(snap.settlements.length, m.state.settlements.length, 'every settlement is visible');
+  assert.ok(snap.armies.some((a) => a.kid === 1), 'the rival army is visible');
+  // Private details stay private.
+  assert.equal(snap.kingdoms[1].stock, undefined);
+  assert.equal(snap.settlements.find((s) => s.id === theirs.id).garrison, undefined);
+  // Settlers may go anywhere within reach: no exploring first.
+  const home = cap(m, 0);
+  home.pop = 60;
+  home.stage = 1;
+  let target = null;
+  for (let r = 14; r < 40 && !target; r += 2) {
+    for (let a = 0; a < 24; a++) {
+      const x = Math.round(home.x + Math.cos(a * 0.26) * r);
+      const y = Math.round(home.y + Math.sin(a * 0.26) * r);
+      if (canFoundAt(m.world, x, y) && !m.exec(0, { type: 'found', sid: home.id, x, y }).error) {
+        target = { x, y };
+        break;
+      }
+    }
+  }
+  assert.ok(target, 'settlers set out without any exploring');
 });

@@ -164,14 +164,15 @@ function helpScreen() {
   showModal(`<h2>How to play</h2><div class="help small">
     <p><b>Found your capital.</b> Pick a site: fertile plains, forests, hills with iron, coasts and river crossings all favour different strategies.</p>
     <p><b>Your towns build themselves.</b> Houses go up as people need them, and streets, districts, markets and walls grow from your decisions. You order workplaces and upgrades; the town planner lays them out.</p>
-    <p><b>People are your workforce.</b> Every soldier is a worker taken from a farm or a forge. Soldiers need arms, barracks and time to train, and cost food and coin to keep. Militia can be levied in an emergency, but they are weak and the economy suffers.</p>
+    <p><b>Four resources and gold.</b> Food feeds everyone, wood builds, stone raises bigger towns and walls, iron arms infantry and makes cities. Gold comes from taxes and trade, and pays your soldiers.</p>
+    <p><b>People are your workforce.</b> Every soldier is a worker taken from the fields. Soldiers need barracks and time to train: infantry costs iron, archers cost wood, and all of them eat food and draw gold. Militia can be levied in an emergency, but they are weak and the economy suffers.</p>
     <p><b>Grow</b> settlements from outpost to hamlet, village, town and city. Each stage needs people, materials and certain buildings, claims more land and allows more buildings.</p>
-    <p><b>Expand deliberately.</b> Explore with scouts, then send settlers to found outposts. Connect them by road: unconnected towns lose part of what they produce on the way.</p>
+    <p><b>Expand deliberately.</b> The whole map is open to everyone: send settlers to found outposts within reach. Connect them by road: unconnected towns lose part of what they produce on the way.</p>
     <p><b>Trade</b> at the neutral free cities with caravans, using standing buy and sell orders, or strike agreements with other realms. Prices follow supply and demand.</p>
     <p><b>War</b> opens borders. Armies need supply near your land; hills, forests and rivers favour defenders; walls must be battered down, ideally with siege engines, before a town can be taken.</p>
     <p><b>Win</b> by conquest, by holding two thirds of all towns and 60% of all people for 4 minutes, by building the Grand Exchange and holding it for 3 minutes, or by score when time runs out.</p>
     <p><b>Controls:</b> drag to pan (or WASD), wheel to zoom, click to select, right-click to march an army, H for your capital, Space to pause, 1/2/3 for speed, Esc to cancel.</p>
-    <p><b>On a phone or tablet:</b> drag to pan, pinch or double-tap to zoom, tap to select. Long-press the map to march a selected army. Map orders (settlers, scouts, roads, marches) show the spot first and wait for you to confirm. The bar at the bottom opens your town, realm, trade, diplomacy and chronicle.</p>
+    <p><b>On a phone or tablet:</b> drag to pan, pinch or double-tap to zoom, tap to select. Long-press the map to march a selected army. Map orders (settlers, roads, marches) show the spot first and wait for you to confirm. The bar at the bottom opens your town, realm, trade, diplomacy and chronicle.</p>
     </div><div class="footer"><span></span><button class="btn" data-go="title">Back</button></div>`);
 }
 

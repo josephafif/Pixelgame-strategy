@@ -1,5 +1,5 @@
 // Strategic overview images at one pixel per tile: terrain with relief,
-// territory fill and borders, fog of war. Used when zoomed out and for the
+// territory fill and borders. Used when zoomed out and for the
 // minimap.
 
 import { BIOMES, B, D } from '../../engine/world/biomes.js';
@@ -81,22 +81,6 @@ export function buildTerritory(cw, fillAlpha = 110) {
   fctx.putImageData(fi, 0, 0);
   bctx.putImageData(bi, 0, 0);
   return { fill, border };
-}
-
-export function buildFog(cw) {
-  const { W, H, explored } = cw;
-  const cv = makeCanvas(W, H);
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(W, H);
-  for (let i = 0; i < W * H; i++) {
-    if (explored[i]) continue;
-    img.data[i * 4] = 24;
-    img.data[i * 4 + 1] = 19;
-    img.data[i * 4 + 2] = 14;
-    img.data[i * 4 + 3] = 205;
-  }
-  ctx.putImageData(img, 0, 0);
-  return cv;
 }
 
 export const DEPOSIT_COLORS = {

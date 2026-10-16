@@ -1,18 +1,20 @@
 // Frame composition: camera, terrain chunks (cached, generated progressively),
-// settlement layers, deposits, territory, fog of war, units, selection and
+// settlement layers, deposits, territory, units, selection and
 // labels. Zoomed out it switches to a one-pixel-per-tile strategic map.
 
 import { renderChunk, CHUNK, TILE } from './ground.js';
 import { renderSettlementLayer } from './settlement-layer.js';
 import { PaintPool } from './paint-pool.js';
 import { layoutBounds } from '../../engine/settlement/planner.js';
-import { buildTerrainOverview, buildTerritory, buildFog, DEPOSIT_COLORS } from './overview.js';
+import { buildTerrainOverview, buildTerritory, DEPOSIT_COLORS } from './overview.js';
 import { soldierSprite, wagonSprite, boatSprite } from './decor.js';
 import { Pix } from './pix.js';
 import { D } from '../../engine/world/biomes.js';
 
 export const ZOOMS = [2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
 const DETAIL = 8; // pixels per tile at which the pixel-art view takes over
+// Deposits that matter to the economy: iron veins, fish shoals, good stone.
+const SHOWN_DEPOSITS = new Set([D.IRON, D.FISH, D.STONE]);
 // Cached chunks are 512×512 bitmaps (1 MB each): phones keep fewer.
 const MAX_CHUNKS = typeof window !== 'undefined' && Math.min(window.innerWidth, window.innerHeight) < 600 ? 48 : 96;
 
@@ -61,7 +63,6 @@ export class Renderer {
     this.layers = new Map();
     this.overview = buildTerrainOverview(cw.world);
     this.terr = null;
-    this.fog = null;
     this.hoverTile = null;
     this.selection = null; // { type: 'settlement'|'army', id }
     this.mode = null; // { kind, ... } set by input/UI
@@ -252,10 +253,6 @@ export class Renderer {
       cw.territoryDirty = false;
       this.terrStamp = (this.terrStamp || 0) + 1;
     }
-    if (cw.fogDirty || !this.fog) {
-      this.fog = buildFog(cw);
-      cw.fogDirty = false;
-    }
     const ppt = this.cam.ppt;
     const tl = this.screenToTile(0, 0);
     const br = this.screenToTile(this.vw, this.vh);
@@ -268,12 +265,6 @@ export class Renderer {
     else this.drawStrategic(ox, oy, ppt);
     this.drawUnits(ox, oy, ppt);
     this.drawSelection(ox, oy, ppt);
-    // Fog of war over everything in the world (the whole land is surveyed
-    // while capitals are being chosen).
-    if (!cw.snap || cw.snap.phase !== 'placement') {
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(this.fog, ox, oy, cw.W * ppt, cw.H * ppt);
-    }
     this.drawLabels(ox, oy, ppt);
     this.drawPreview(ox, oy, ppt);
     this.pool.pump();
@@ -323,7 +314,7 @@ export class Renderer {
     for (let y = Math.max(0, y0); y < Math.min(cw.H, y1); y++) {
       for (let x = Math.max(0, x0); x < Math.min(cw.W, x1); x++) {
         const i = y * cw.W + x;
-        if (!dep[i] || !cw.explored[i]) continue;
+        if (!SHOWN_DEPOSITS.has(dep[i])) continue;
         ctx.fillStyle = DEPOSIT_COLORS[dep[i]];
         ctx.fillRect(ox + x * ppt + ppt * 0.2, oy + y * ppt + ppt * 0.2, ppt * 0.6, ppt * 0.6);
       }
@@ -383,7 +374,7 @@ export class Renderer {
     for (let y = Math.max(0, y0); y < Math.min(cw.H, y1); y++) {
       for (let x = Math.max(0, x0); x < Math.min(cw.W, x1); x++) {
         const i = y * cw.W + x;
-        if (!dep[i] || !cw.explored[i] || cw.ov.cleared[i]) continue;
+        if (!SHOWN_DEPOSITS.has(dep[i]) || cw.ov.cleared[i]) continue;
         const spr = depositSprite(dep[i]);
         ctx.drawImage(spr.canvas, ox + (x * TILE + 2) * scale, oy + (y * TILE + 4) * scale, spr.w * scale, spr.h * scale);
       }
@@ -646,7 +637,7 @@ export class Renderer {
     }
   }
 
-  /** Minimap: whole world, territory, fog and the current view. */
+  /** Minimap: whole world, territory and the current view. */
   drawMinimap(mini) {
     const { cw } = this;
     const ctx = mini.getContext('2d');
@@ -660,7 +651,6 @@ export class Renderer {
       ctx.globalAlpha = 1;
       ctx.drawImage(this.terr.border, 0, 0, w, h);
     }
-    if (this.fog) ctx.drawImage(this.fog, 0, 0, w, h);
     const sx = w / cw.W;
     const sy = h / cw.H;
     ctx.strokeStyle = '#fff3c4';

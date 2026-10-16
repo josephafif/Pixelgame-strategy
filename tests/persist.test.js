@@ -48,6 +48,7 @@ test('bad or mismatched saves are rejected with a clear error', () => {
   const data = saveMatch(a);
   assert.throws(() => loadMatch({ hello: 1 }), /not a Realmwright saved game/);
   assert.throws(() => loadMatch({ ...data, version: 99 }), /Unsupported save version/);
+  assert.throws(() => loadMatch({ ...data, version: 1 }), /older version/);
   assert.throws(() => loadMatch({ ...data, world: { ...data.world, check: 12345 } }, { world: WORLD }), /does not match/);
   const d = describeSave(data);
   assert.equal(d.name, 'Ilse');

@@ -13,7 +13,7 @@ export function total(units) {
 }
 
 function emptyUnits() {
-  return { militia: 0, inf: 0, arch: 0, cav: 0, siege: 0 };
+  return { militia: 0, inf: 0, arch: 0, siege: 0 };
 }
 
 export function recruitCapacity(s) {
@@ -29,8 +29,7 @@ export function recruitError(m, kid, s, unit, n) {
   if (!cap) return `${s.name} needs barracks to train soldiers.`;
   const busy = s.training.filter((t) => !UNITS[t.unit].levy).reduce((a, t) => a + t.n, 0);
   if (busy + n > cap) return `Barracks can train ${cap} at once (${busy} in training).`;
-  if (u.needs === 'cavalry' && !s.buildings.stables) return 'Cavalry needs stables in this settlement.';
-  if (u.needs === 'siege' && !s.buildings.siegeworks) return 'Siege engines need siege works here.';
+  if (u.needsStage && s.stage < u.needsStage) return `${u.name}s are built in towns and cities.`;
   const people = n * (u.crew || 1);
   if (s.pop - people < 12) return `${s.name} cannot spare ${people} workers.`;
   if (!m.canAfford(kid, u.cost, n)) return `Not enough equipment: each ${u.name.toLowerCase()} needs ${Object.entries(u.cost).map(([r, v]) => `${v} ${r}`).join(', ')}.`;
@@ -69,7 +68,8 @@ export function demobilize(m, kid, s, unit, n) {
   s.garrison[unit] -= n;
   const u = UNITS[unit];
   const k = m.state.kingdoms[kid];
-  for (const [r, v] of Object.entries(u.cost)) if (r === 'arms') k.stock.arms += v * n * 0.7;
+  // Most of the equipment goes back into the stores.
+  for (const [r, v] of Object.entries(u.cost)) k.stock[r] = (k.stock[r] || 0) + v * n * 0.7;
   s.demob.push({ n: n * (u.crew || 1), t: RULES.demobilizeTime });
   return { ok: true };
 }
@@ -168,15 +168,12 @@ function strength(m, units, { attacking, x, y, walls = 1, settlement = false, mo
     else if (b === B.MARSH) terrain = 0.9;
   } else if (b === B.RIVER && !m.roadMask[i]) terrain = 0.7;
   else if (b === B.MARSH) terrain = 0.9;
-  const open = b === B.GRASS || b === B.MEADOW || b === B.DESERT || b === B.BEACH;
-  const rough = b === B.FOREST || b === B.TAIGA || b === B.MARSH || b === B.MOUNTAIN || b === B.HILLS;
   let s = 0;
   for (const u of UNIT_KEYS) {
     const n = units[u] || 0;
     if (n <= 0) continue;
     const def = UNITS[u];
     let v = attacking ? def.atk : def.def;
-    if (u === 'cav') v *= open ? 1.3 : rough ? 0.65 : 1;
     if (!attacking && settlement && def.defendBonus) v *= 1 + def.defendBonus;
     if (!attacking && settlement) v *= walls;
     s += v * n;
@@ -396,7 +393,6 @@ export function tick(m, dt) {
   }
   // Raiders intercept enemy caravans and settlers.
   for (const p of st.parties.slice()) {
-    if (p.kind === 'scout') continue;
     for (const a of st.armies) {
       if (!m.atWar(a.kid, p.kid) || total(a.units) < 0.5) continue;
       if (Math.hypot(a.x - p.x, a.y - p.y) > 1.5) continue;

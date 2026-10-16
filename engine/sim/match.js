@@ -75,7 +75,8 @@ export class Match {
     };
     (opts.players || [{ name: 'You' }]).forEach((p, k) => {
       this.state.kingdoms.push(this.newKingdom(k, p.name || names[k], p, names[k]));
-      this.explored.push(new Uint8Array(W * H));
+      // No fog of war: every realm sees the whole map (kept as a mask for saves and site surveys).
+      this.explored.push(new Uint8Array(W * H).fill(1));
     });
     trade.initMarket(this);
     // Neutral free cities, grown to full size at the start.
@@ -96,9 +97,9 @@ export class Match {
       alive: true,
       placed: false,
       capital: -1,
-      stock: { food: 160, wood: 160, stone: 40, iron: 0, fuel: 12, herbs: 6, crystal: 0, goods: 6, arms: 16 },
+      stock: { food: 160, wood: 160, stone: 40, iron: 16 },
       coin: 160,
-      priorities: { food: 3, wood: 2, stone: 2, iron: 2, fuel: 1, herbs: 1, crystal: 1, industry: 2, build: 3 },
+      priorities: { food: 3, wood: 2, stone: 2, iron: 2, build: 3 },
       relations: {},
       orders: [],
       rates: {},
@@ -179,7 +180,6 @@ export class Match {
     let cap = RULES.baseStorage;
     for (const s of this.settlementsOf(kid)) {
       cap += 120 + s.stage * 80;
-      cap += (s.buildings.granary || 0) * BUILDINGS.granary.effect.storage;
     }
     return cap;
   }
@@ -262,7 +262,7 @@ export class Match {
       houses: 0,
       buildings: {},
       projects: [],
-      garrison: { militia: 0, inf: 0, arch: 0, cav: 0, siege: 0 },
+      garrison: { militia: 0, inf: 0, arch: 0, siege: 0 },
       training: [],
       demob: [],
       walls: { level: 0, hp: 0 },
@@ -320,7 +320,6 @@ export class Match {
     s.garrison.inf = 6;
     economy.computeSite(this, s);
     this.recalcHousing(s);
-    this.revealAround(kid, x, y, 22);
     this.event(-1, 'found', `${k.name} founds the capital ${s.name}.`, x, y);
     return s;
   }
@@ -335,8 +334,7 @@ export class Match {
     const dist = new Float32Array(W * this.world.height).fill(Infinity);
     const sources = [];
     for (const s of this.state.settlements) {
-      const towers = s.buildings.tower || 0;
-      const r = (s.hub ? 12 : STAGES[s.stage].radius) + Math.min(3, towers) * 1.5;
+      const r = s.hub ? 12 : STAGES[s.stage].radius;
       sources.push({ idx: this.idx(s.x, s.y), cost0: 0, tag: s.id, limit: r });
     }
     const cost = (from, to, diag) => {
@@ -358,50 +356,11 @@ export class Match {
     for (const s of this.state.settlements) economy.computeSite(this, s);
   }
 
-  revealAround(kid, x, y, r) {
-    const ex = this.explored[kid];
-    if (!ex) return;
-    const W = this.world.width;
-    const H = this.world.height;
-    const r2 = r * r;
-    for (let dy = -r; dy <= r; dy++) {
-      const yy = y + dy;
-      if (yy < 0 || yy >= H) continue;
-      for (let dx = -r; dx <= r; dx++) {
-        const xx = x + dx;
-        if (xx < 0 || xx >= W || dx * dx + dy * dy > r2) continue;
-        ex[yy * W + xx] = 1;
-      }
-    }
-  }
-
-  vision() {
-    for (const s of this.state.settlements) {
-      if (s.kingdom < 0) continue;
-      this.revealAround(s.kingdom, s.x, s.y, STAGES[s.stage].radius + 4 + (s.buildings.tower || 0) * 4);
-    }
-    for (const a of this.state.armies) this.revealAround(a.kid, Math.round(a.x), Math.round(a.y), 5);
-    for (const p of this.state.parties) this.revealAround(p.kid, Math.round(p.x), Math.round(p.y), p.kind === 'scout' ? 8 : 3);
-  }
-
-  /** Is world point visible to kingdom kid right now (for units)? */
-  canSee(kid, x, y) {
-    if (kid < 0) return true;
-    for (const s of this.state.settlements) {
-      if (s.kingdom !== kid) continue;
-      const r = STAGES[s.stage].radius + 4 + (s.buildings.tower || 0) * 4;
-      if ((s.x - x) ** 2 + (s.y - y) ** 2 <= r * r) return true;
-    }
-    for (const a of this.state.armies) if (a.kid === kid && (a.x - x) ** 2 + (a.y - y) ** 2 <= 36) return true;
-    for (const p of this.state.parties) if (p.kid === kid && (p.x - x) ** 2 + (p.y - y) ** 2 <= (p.kind === 'scout' ? 64 : 12)) return true;
-    return false;
-  }
-
   // -------------------------------------------------------------------------
   // Movement costs and paths
 
   /**
-   * Step cost for a mover profile. profile: { kid, kind: 'army'|'caravan'|'scout'|'settlers', sea }
+   * Step cost for a mover profile. profile: { kid, kind: 'army'|'caravan'|'settlers', sea }
    */
   moveCost(profile, i) {
     const b = this.world.biome[i];
@@ -527,7 +486,6 @@ export class Match {
     expansion.tick(this, dt);
     trade.tick(this, dt, every(5));
     military.tick(this, dt);
-    if (every(1)) this.vision();
     if (this.territoryDirty) this.recomputeTerritory();
     if (every(1)) this.checkVictory();
     for (const k of st.kingdoms) {
@@ -551,7 +509,6 @@ export class Match {
     for (const a of st.kingdoms) for (const b of st.kingdoms) if (a !== b) a.relations[b.id] = 'peace';
     st.phase = 'running';
     this.recomputeTerritory();
-    this.vision();
     this.event(-1, 'info', 'The age of kingdoms begins.');
   }
 

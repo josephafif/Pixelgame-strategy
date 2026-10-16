@@ -10,14 +10,14 @@ import { iconImg, icon } from './icons.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const fmt = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.floor(v)}`);
-const RES_ICON = { food: 'food', wood: 'wood', stone: 'stone', iron: 'iron', fuel: 'fuel', herbs: 'herbs', crystal: 'crystal', goods: 'goods', arms: 'arms', coin: 'coin' };
-const LABOR_NAMES = { food: 'Food', wood: 'Timber', stone: 'Stone', iron: 'Iron', fuel: 'Fuel', herbs: 'Herbs', crystal: 'Crystal', industry: 'Industry', build: 'Building' };
+const RES_ICON = { food: 'food', wood: 'wood', stone: 'stone', iron: 'iron', coin: 'coin' };
+const LABOR_NAMES = { food: 'Food', wood: 'Timber', stone: 'Stone', iron: 'Iron', build: 'Building' };
 const LEVELS = ['Off', 'Low', 'Normal', 'High'];
-const UNIT_ORDER = ['inf', 'arch', 'cav', 'siege'];
+const UNIT_ORDER = ['inf', 'arch', 'siege'];
 const TAB_NAMES = { realm: 'Realm', trade: 'Trade', diplomacy: 'Diplomacy', chronicle: 'Chronicle' };
 const DOCK = [['town', 'house', 'Town'], ['realm', 'crown', 'Realm'], ['trade', 'scales', 'Trade'], ['diplomacy', 'banner', 'Diplomacy'], ['chronicle', 'scroll', 'Chronicle']];
 // Phones keep the most watched stocks at the front of the scrolling strip.
-const COMPACT_ORDER = ['coin', 'food', 'wood', 'stone', 'pop', 'soldiers', 'iron', 'fuel', 'herbs', 'goods', 'arms', 'crystal'];
+const COMPACT_ORDER = ['coin', 'food', 'wood', 'stone', 'iron', 'pop', 'soldiers'];
 const SECTION_DEFAULTS = { grow: true, construction: true, build: true, work: false, military: false, walls: false };
 const COMPACT_QUERY = '(max-width: 720px), (max-height: 500px)';
 
@@ -35,7 +35,7 @@ function costHtml(cost, have = null) {
   return Object.entries(cost)
     .map(([r, v]) => {
       const short = have && (r === 'coin' ? have.coin : have.stock[r] || 0) < v;
-      return `<span class="${short ? 'bad' : ''}">${iconImg(RES_ICON[r] || 'goods', r)}${v}</span>`;
+      return `<span class="${short ? 'bad' : ''}">${iconImg(RES_ICON[r] || 'coin', r)}${v}</span>`;
     })
     .join(' ');
 }
@@ -338,8 +338,8 @@ export class GameUI {
     for (const r of [...RES_KEYS, 'coin']) {
       const v = r === 'coin' ? me.coin : me.stock[r] || 0;
       const rate = (me.rates?.[r] || 0) * 60;
-      const short = (r === 'food' && me.flags?.starving) || (r === 'fuel' && me.flags?.cold) || (r === 'coin' && me.flags?.unpaid);
-      const name = r === 'coin' ? 'Coin' : RESOURCES[r].name;
+      const short = (r === 'food' && me.flags?.starving) || (r === 'coin' && me.flags?.unpaid);
+      const name = r === 'coin' ? 'Gold' : RESOURCES[r].name;
       const trend = rate > 0.5 ? 'up' : rate < -0.5 ? 'down' : '';
       cells[r] = `<div class="res${short ? ' short' : ''} ${trend}" data-tip="${esc(name)}: ${Math.round(v)} (${rate >= 0 ? '+' : ''}${rate.toFixed(1)} per minute)">${iconImg(RES_ICON[r], name)}<b>${fmt(v)}</b><span class="rate ${trend}">${rate > 0.5 ? '▲' : rate < -0.5 ? '▼' : ''}</span></div>`;
     }
@@ -418,7 +418,6 @@ export class GameUI {
     if (s.siege) tags.push('<span class="tag bad">Under siege!</span>');
     if (s.full) tags.push('<span class="tag bad">No room for houses</span>');
     if (s.crowded) tags.push('<span class="tag">Needs to grow for more houses</span>');
-    if (s.site?.cold) tags.push('<span class="tag">Cold: burns fuel</span>');
     const out = [];
     for (const [r, v] of Object.entries(s.out || {})) if (v > 0.001) out.push(`<span>${iconImg(RES_ICON[r], r)} ${(v * 60).toFixed(1)}/min</span>`);
     const jobs = s.jobs?.assigned || {};
@@ -448,11 +447,10 @@ export class GameUI {
     const quick = `<div class="quick">
         ${next ? `<button class="btn go" data-act="upgrade" ${canGrow ? '' : 'disabled'} title="Grow into a ${next.name.toLowerCase()}">${iconImg('crown')}${growing ? 'Growing' : 'Grow'}</button>` : ''}
         <button class="btn" data-act="mode-found" ${canSettle ? '' : 'disabled'} title="${RULES.settlerPop} settlers, ${RULES.settlerCost.wood} wood, ${RULES.settlerCost.food} food">${iconImg('house')}Settlers</button>
-        <button class="btn" data-act="mode-scout" title="Explore the land">${iconImg('banner')}Scouts</button>
         <button class="btn" data-act="mode-road" title="Build a road to another settlement">${iconImg('stone')}Road</button>
         <button class="btn" data-act="army" ${hasTroops ? '' : 'disabled'} title="March the garrison out as an army">${iconImg('soldier')}Army</button>
       </div>
-      <div class="small muted">${canSettle ? `Settlers take ${RULES.settlerPop} people, ${RULES.settlerCost.wood} wood and ${RULES.settlerCost.food} food to explored land.` : `Settlers leave from a hamlet of at least ${RULES.settlerMinPop} people.`}</div>`;
+      <div class="small muted">${canSettle ? `Settlers take ${RULES.settlerPop} people, ${RULES.settlerCost.wood} wood and ${RULES.settlerCost.food} food to found an outpost within ${RULES.maxFoundDistance} tiles.` : `Settlers leave from a hamlet of at least ${RULES.settlerMinPop} people.`}</div>`;
     // Projects.
     const projectList = s.projects || [];
     const projects = projectList.map((p) => {
@@ -471,7 +469,7 @@ export class GameUI {
       else if (def.capitalOnly && !s.capital) why = 'capital only';
       else if (def.notCapital && s.capital) why = 'not in the capital';
       else if (def.once && have) why = 'already built';
-      else if (def.site && !(s.site?.[def.site] > 0)) why = { iron: 'no iron vein', coal: 'no coal seam', crystal: 'no crystal geode', water: 'no water nearby', coast: 'no coast' }[def.site] || 'unsuitable land';
+      else if (def.site && !(s.site?.[def.site] > 0)) why = { iron: 'no iron vein nearby', water: 'no water nearby', coast: 'no coast' }[def.site] || 'unsuitable land';
       else if (nonHouse >= stage.maxBuild) why = 'settlement full: grow it';
       else if (s.unrest > 0) why = 'unrest';
       if (s.stage + 1 < def.stage) continue;
@@ -487,9 +485,8 @@ export class GameUI {
     const cap = (s.buildings.barracks || 0) * 10;
     const recruit = UNIT_ORDER.map((u) => {
       const def = UNITS[u];
-      const need = def.needs === 'cavalry' ? s.buildings.stables : def.needs === 'siege' ? s.buildings.siegeworks : true;
-      const off = !cap || !need;
-      return `<div class="item ${off ? 'disabled' : ''}"><span class="name">${def.name} <span class="small muted">atk ${def.atk} def ${def.def}</span></span><span class="stepper"><input type="number" inputmode="numeric" min="1" max="10" value="${this.recruitN[u]}" data-n="${u}" aria-label="How many"><button class="btn small" data-act="recruit" data-unit="${u}" ${off ? 'disabled' : ''}>Train</button></span><span class="cost">${costHtml(def.cost, me)} each · ${def.train}s</span><span class="small muted">upkeep ${def.food} food, ${def.coin} coin/s</span></div>`;
+      const off = !cap || (def.needsStage && s.stage < def.needsStage);
+      return `<div class="item ${off ? 'disabled' : ''}"><span class="name">${def.name} <span class="small muted">atk ${def.atk} def ${def.def}</span></span><span class="stepper"><input type="number" inputmode="numeric" min="1" max="10" value="${this.recruitN[u]}" data-n="${u}" aria-label="How many"><button class="btn small" data-act="recruit" data-unit="${u}" ${off ? 'disabled' : ''}>Train</button></span><span class="cost">${costHtml(def.cost, me)} each · ${def.train}s</span><span class="desc">${esc(def.desc)} Upkeep ${def.food} food and ${def.coin} gold per second.</span></div>`;
     }).join('');
     const military = `<div class="small">${garrison}${training ? `<br><span class="muted">Training: ${training}</span>` : ''}</div>
         <div class="small muted">${cap ? `Barracks train ${cap} at a time.` : 'Build barracks to train soldiers.'} Recruits leave their jobs at once.</div>
@@ -527,9 +524,9 @@ export class GameUI {
       <div class="scroll">
         <div class="row"><span>${STAGES[s.stage].name}</span><span>${Math.floor(s.pop)} people</span></div>
         <div class="row"><span>Walls</span><span>${s.walls.level ? `${WALLS[s.walls.level].name} (${Math.round(s.walls.hp)})` : 'none'}</span></div>
-        ${s.hub ? '' : `<div class="row"><span>Garrison (scouts' estimate)</span><span>~${s.garrisonApprox ?? '?'}</span></div>`}
+        ${s.hub ? '' : `<div class="row"><span>Garrison (estimate)</span><span>~${s.garrisonApprox ?? '?'}</span></div>`}
         ${s.siege ? '<div class="tag bad">Under siege</div>' : ''}
-        ${s.hub ? `<h3>Market prices</h3><table class="t">${prices}</table><p class="small muted">Free cities buy and sell everything. Caravans from your markets trade here; roads and harbours shorten the journey.</p>` : ''}
+        ${s.hub ? `<h3>Market prices</h3><table class="t">${prices}</table><p class="small muted">Free cities buy and sell everything. Caravans from your markets trade here; roads shorten the journey.</p>` : ''}
         ${atWar ? `<p class="small">You are at war: ${marchHow} to besiege it. Walls must fall before the town can be taken.</p>` : ''}
       </div>`;
   }
@@ -579,13 +576,10 @@ export class GameUI {
     const me = cw.me;
     const flags = [];
     if (me.flags?.starving) flags.push('<span class="tag bad">Starving</span>');
-    if (me.flags?.cold) flags.push('<span class="tag bad">Out of fuel</span>');
-    if (me.flags?.noHerbs) flags.push('<span class="tag bad">No herbs</span>');
-    if (me.flags?.noGoods) flags.push('<span class="tag bad">No goods</span>');
     if (me.flags?.unpaid) flags.push('<span class="tag bad">Soldiers unpaid</span>');
     const prio = LABOR.map((c) => `<span>${LABOR_NAMES[c]}</span><span class="levels">${LEVELS.map((n, i) => `<button class="${me.priorities[c] === i ? 'on' : ''}" data-act="prio" data-cat="${c}" data-level="${i}">${n}</button>`).join('')}</span>`).join('');
     const towns = cw.mySettlements().sort((a, b) => b.pop - a.pop).map((s) => `<tr data-act="goto" data-sid="${s.id}" style="cursor:pointer"><td>${s.capital ? '★ ' : ''}${esc(s.name)}</td><td>${STAGES[s.stage].name}</td><td>${Math.floor(s.pop)}</td><td>${s.connected ? '' : '<span class="bad" title="No road to the capital: deliveries lose part of their goods">⚠</span>'}</td></tr>`).join('');
-    const need = me.need ? `food ${(me.need.food * 60).toFixed(0)}, fuel ${(me.need.fuel * 60).toFixed(0)}, herbs ${(me.need.herbs * 60).toFixed(1)}, goods ${(me.need.goods * 60).toFixed(1)} per minute` : '';
+    const need = me.need ? `${(me.need.food * 60).toFixed(0)} food per minute` : '';
     return `<h3>${esc(me.name)}</h3>
       <div class="grid2 small"><span>Population</span><b>${me.stats.pop}</b><span>Soldiers</span><b>${me.stats.soldiers}</b><span>Settlements</span><b>${me.stats.settlements}</b><span>Score</span><b>${me.score}</b></div>
       <div style="margin-top:6px">${flags.join('')}</div>
@@ -609,9 +603,9 @@ export class GameUI {
       const trend = p > base * 1.08 ? '<span class="bad">▲</span>' : p < base * 0.92 ? '<span class="good">▼</span>' : '';
       return `<tr><td>${iconImg(RES_ICON[r])} ${RESOURCES[r].name}</td><td>${p.toFixed(2)} ${trend}</td><td class="muted">${Math.floor(me.stock[r] || 0)}</td></tr>`;
     }).join('');
-    const markets = cw.mySettlements().filter((s) => s.buildings.market || s.buildings.harbor);
+    const markets = cw.mySettlements().filter((s) => s.buildings.market);
     const caravans = snap.parties.filter((p) => p.kid === cw.you && p.kind === 'caravan').length;
-    const slots = cw.mySettlements().reduce((a, s) => a + (s.buildings.market || 0) * 2 + (s.buildings.harbor || 0), 0);
+    const slots = cw.mySettlements().reduce((a, s) => a + (s.buildings.market || 0) * 2, 0);
     const orders = (me.orders || []).map((o) => `<div class="row small"><span>${o.side === 'sell' ? 'Sell' : 'Buy'} ${o.amount} ${o.res} when ${o.side === 'sell' ? `stock > ${o.keep} and price ≥ ${o.limit}` : `stock < ${o.keep} and price ≤ ${o.limit}`}</span><button class="btn small" data-act="cancel-order" data-oid="${o.id}">✕</button></div>`).join('') || '<div class="small muted">No standing orders.</div>';
     const ags = (snap.agreements || []).map((a) => {
       const other = cw.kingdom(a.a === cw.you ? a.b : a.a);
@@ -624,7 +618,7 @@ export class GameUI {
     const opt = RES_KEYS.map((r) => `<option value="${r}" ${r === resSel ? 'selected' : ''}>${RESOURCES[r].name}</option>`).join('');
     const side = this.fv('side', 'sell');
     return `<h3>Free-city market</h3><table class="t"><tr><th>Good</th><th>Price</th><th>You have</th></tr>${prices}</table>
-      <div class="small muted">Prices follow supply and demand at the free cities: selling a lot lowers the price, buying raises it. Caravans pay ${RULES.caravanCostPerTile} coin per tile each way and take time to travel; markets (2 caravans) and harbours (1, by sea) set your capacity.</div>
+      <div class="small muted">Prices follow supply and demand at the free cities: selling a lot lowers the price, buying raises it. Caravans pay ${RULES.caravanCostPerTile} gold per tile each way and take time to travel; each market sends two.</div>
       <h3>Standing orders</h3>
       <div class="small">${markets.length ? `Caravans: ${caravans}/${slots}` : '<span class="bad">Build a market to trade.</span>'}</div>
       ${orders}
@@ -728,12 +722,11 @@ export class GameUI {
     }
     const tap = this.tapWord;
     const ask = {
-      found: `${tap} explored land to send settlers there.`,
-      scout: `${tap} where the scouts should explore.`,
+      found: `${tap} the land where settlers should found an outpost.`,
       road: `${tap} the settlement or free city the road should reach.`,
       move: `${tap} where the army should march.`,
     }[m.kind];
-    const confirm = { found: 'Send settlers', scout: 'Send scouts', road: 'Build the road', move: 'March' }[m.kind];
+    const confirm = { found: 'Send settlers', road: 'Build the road', move: 'March' }[m.kind];
     const p = this.pendingTap;
     const text = p ? p.html : `${ask}${this.touch ? ' You can check the spot before confirming.' : ' Esc cancels.'}`;
     el.hint.innerHTML = `<div class="hint-text">${text}</div><div class="hint-btns">${p ? `<button class="btn go" data-hint="confirm" ${p.ok ? '' : 'disabled'}>${confirm}</button>` : ''}<button class="btn" data-hint="cancel">Cancel</button></div>`;
@@ -747,7 +740,6 @@ export class GameUI {
     const x = Math.floor(t.x);
     const y = Math.floor(t.y);
     if (m.kind === 'found') this.send({ type: 'found', sid: m.sid, x, y });
-    else if (m.kind === 'scout') this.send({ type: 'scout', sid: m.sid, x, y });
     else if (m.kind === 'road') {
       const s = cw.settlementAt(t.x, t.y);
       if (!s) return;
@@ -766,8 +758,7 @@ export class GameUI {
     if (m.kind === 'found') {
       const src = cw.settlement(m.sid);
       let err = null;
-      if (!cw.isExplored(x, y)) err = 'Unexplored land';
-      else if (!canFoundAt(cw.world, x, y)) err = 'Unsuitable terrain';
+      if (!canFoundAt(cw.world, x, y)) err = 'Unsuitable terrain';
       else {
         const k = cw.ownerK[y * cw.W + x];
         if (k >= 0 && k !== cw.you) err = 'Another kingdom’s land';
@@ -775,7 +766,7 @@ export class GameUI {
       }
       this.r.preview = { x, y, ok: !err, radius: STAGES[0].radius, line: src };
       if (err) return `<b class="bad">${esc(err)}</b>`;
-      const a = analyzeSite(cw.world, x, y, { r: 7, knownDeposit: (i) => cw.explored[i] });
+      const a = analyzeSite(cw.world, x, y, { r: 7 });
       const d = describeSite(a);
       return `<b>${esc(d.title)}</b><br>${d.pros.map((p) => `<span class="tag good">${esc(p)}</span>`).join('')}${d.cons.map((p) => `<span class="tag bad">${esc(p)}</span>`).join('')}<br><span class="small muted">Distance ${Math.round(Math.hypot(src.x - x, src.y - y))} tiles from ${esc(src.name)}</span>`;
     }
@@ -785,8 +776,8 @@ export class GameUI {
       this.r.preview = { x, y, ok: !!s && s.id !== m.sid && (s.kingdom === cw.you || s.hub), line: src };
       return s ? `Road from ${esc(src.name)} to <b>${esc(s.name)}</b> (${Math.round(Math.hypot(s.x - src.x, s.y - src.y))} tiles as the crow flies). Bridges cost stone.` : 'Choose a settlement';
     }
-    if (m.kind === 'scout' || m.kind === 'move') {
-      const from = m.kind === 'scout' ? cw.settlement(m.sid) : cw.army(m.aid);
+    if (m.kind === 'move') {
+      const from = cw.army(m.aid);
       this.r.preview = { x, y, ok: true, line: from };
       return null;
     }
@@ -812,7 +803,7 @@ export class GameUI {
       if (same && this.pendingTap.ok) return this.runMode(t);
       const info = this.hoverTile(t);
       const ok = this.r.preview ? this.r.preview.ok !== false : true;
-      const fallback = { scout: `Scouts will explore around ${x}, ${y}.`, move: `March to ${x}, ${y}.`, road: 'Choose a settlement or free city.', found: '' }[m.kind];
+      const fallback = { move: `March to ${x}, ${y}.`, road: 'Choose a settlement or free city.', found: '' }[m.kind];
       this.pendingTap = { x, y, t, ok: m.kind === 'road' ? ok && !!cw.settlementAt(t.x, t.y) : ok, html: info || fallback };
       this.renderHint();
       return;
@@ -1047,9 +1038,6 @@ export class GameUI {
       }
       case 'mode-found':
         this.setMode({ kind: 'found', sid });
-        break;
-      case 'mode-scout':
-        this.setMode({ kind: 'scout', sid });
         break;
       case 'mode-road':
         this.setMode({ kind: 'road', sid });
