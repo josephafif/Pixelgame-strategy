@@ -72,6 +72,6 @@ export function describeSave(data) {
     phase: st.phase,
     players: st.players.length,
     alive: human ? human.alive : false,
-    share: human && land ? Math.round((human.tiles / Math.max(1, land)) * 100) : 0,
+    share: human && land ? Math.round((human.tiles / Math.max(1, land)) * 1000) / 10 : 0,
   };
 }

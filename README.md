@@ -1,9 +1,13 @@
 # Realmwright
 
-A real-time multiplayer kingdom strategy game. Each settlement grows on its own as procedurally generated
-pixel art. You found a capital, grow it from hamlet to city, expand with settlers and roads, trade at
-neutral free cities and fight rival realms. The rivals can be humans or AIs, and they all play by the
-same rules.
+A real-time multiplayer strategy game about land. Every tile of the map belongs to someone or to
+nobody. Your people grow with the land you hold, your troops push your borders outward, and the towns
+you build grow on their own into procedurally generated pixel-art cities. Rivals can be humans or AIs,
+and they all play by the same rules. The first realm to hold 80% of the land wins, usually within
+10–20 minutes.
+
+The way it plays is inspired by [OpenFront](https://openfront.io). It shares no code, art or numbers
+with it.
 
 Realmwright is a new, independent project. It uses [Pixelgame](https://github.com/josephafif/Pixelgame)
 only as a *visual* reference: pixel scale, palettes and the look of terrain and vegetation. It shares no
@@ -26,51 +30,45 @@ Open <http://localhost:8080> in a browser.
   can save from the menu (Esc or ☰), and the game autosaves every three minutes. *Continue saved realm*
   resumes it. *Download save file* and *Load save file…* move a realm between browsers.
 - **Multiplayer**: one player creates a room and shares the five-letter code. Up to 8 humans can join,
-  plus AI rivals. The server runs the simulation and only accepts validated commands. Players who
-  disconnect rejoin with the same code and get their kingdom back. The server saves running matches every
+  plus up to 24 AI rivals. The server runs the simulation and only accepts validated commands. Players who
+  disconnect rejoin with the same code and get their realm back. The server saves running matches every
   minute and when it stops (Ctrl-C). After a restart, a room comes back when its first player rejoins.
 
 ## Playing
 
-- **Placement.** Pick a start site. The suggestions show what each site is good for: fertile plains,
-  forests, iron hills, coasts or river crossings.
-- **Settlements build themselves.** Houses go up as people need them. Streets, districts, fields, docks
-  and walls are laid out by the town planner. You order workplaces and stage upgrades:
-  outpost → hamlet → village → town → city.
-- **Workers and soldiers.** People are the workforce. Each soldier is a worker taken off the land.
-  Soldiers need barracks and training time; infantry costs iron, archers wood. They eat food and draw gold. Militia levies are fast,
-  but they are weak and hurt production. Demobilised soldiers return to work gradually.
-- **A small economy.** Four resources (food, wood, stone, iron) plus gold, and eight buildings: farm,
-  fishery, lumber camp, quarry, iron mine, market, barracks and the Grand Exchange.
+- **Start.** Tap open land to choose where your realm begins. You get a patch of land around a hamlet.
+- **People and troops.** The more land and the bigger your towns, the more people you can have. The
+  *Troops* slider sets how many of them are under arms; the rest work and earn gold.
+- **Attack** by tapping land. Unclaimed land is cheap. A rival's land costs more, and more still in
+  forests, hills and mountains or near an outpost. The *Attack* slider sets the share of your troops
+  each attack sends. Your border pushes outward like a wave until the troops are spent, and what is
+  left comes home. ✕ calls an attack off.
+- **Boats.** A tap on a shore across the water sends a boat with troops (three at a time). They land
+  and attack from the beach.
+- **Build** with gold:
+  - *towns* bring more people and gold, grow by themselves, and can be raised to village, town and
+    walled city;
+  - *ports* send trade ships to other players' ports, and both sides earn gold;
+  - *outposts* make the land around them much harder to take.
+- **Alliances.** Long-press (or right-click) a realm to ask for an alliance. Allies cannot attack each
+  other and earn more from trade. An alliance lasts five minutes and can be renewed. Whoever breaks one
+  is a traitor for a minute, and their land is easier to take.
 - **No fog of war.** Everyone sees the whole map.
-- **Expansion is slow and deliberate.** Settlers (wood, food and people) found outposts within reach.
-  Roads are built tile by tile and connect towns. Unconnected towns lose part of what they ship.
-- **Trade.** Markets send caravans to the free cities, and prices follow supply and demand. You can place
-  standing buy and sell orders and make agreements with other realms. Distance and roads set the
-  cost and time of transport.
-- **War.** At peace, borders are closed to armies. War opens them. Terrain favours defenders (hills,
-  mountains, forest), and rivers without bridges slow attackers. Armies starve outside their supply
-  range. Walls must be battered down (siege engines help) before a town can fall. A captured town keeps
-  its buildings but is unruly for a while.
-- **Victory.** You can win in four ways:
-  - by conquest;
-  - by holding two thirds of all towns and 60% of all people for four minutes (everyone is warned);
-  - by building the Grand Exchange in a city and holding it for three minutes;
-  - by having the best score when time runs out.
+- **Victory:** hold 80% of all land, be the last realm standing, or hold the most land when time runs
+  out.
+- **AI rivals** are builders, merchants or warlords. They play easy, normal or hard. On easy and
+  normal they want a bigger edge before they turn on a human, and only one or two of them attack the
+  same human at a time.
 
-**Controls:** drag or WASD to pan, wheel to zoom, click to select, right-click to march a selected army,
-H to jump to your capital, Space to pause (single player), 1/2/3 to set speed, Esc to cancel or open the
-menu.
+**Screen:** your land share, people (the bar under it shows how close you are to your limit), troops
+and gold at the top left. The clock, speed, leaderboard and menu are at the top right. Requests and
+incoming attacks appear as small notices under the top bar. The bottom bar holds the two sliders and
+the three build buttons. Your attacks under way show just above it.
 
-**On phones and tablets** the layout changes:
-
-- A bar at the bottom opens Town, Realm, Trade, Diplomacy and Chronicle. In landscape it becomes a rail
-  on the left.
-- One sheet is open at a time, so the map stays visible. Drag the sheet's handle up to expand it, or
-  down to close it.
-- Drag to pan, pinch or double-tap to zoom, tap to select, and long-press the map to march the selected
-  army.
-- Orders on the map (settlers, roads, marches) show the spot first and wait for you to confirm.
+**Controls:** drag to pan, wheel or pinch to zoom (it glides and settles on a sharp scale), click or tap
+to attack, right-click or long-press for a small menu (alliances, boats, building on that spot,
+growing a town). Double-tap zooms in. Keys: H home, B/P/O build town/port/outpost, Q/E attack share,
++/- zoom, WASD pan, Space pause, 1/2/3 speed (single player), Esc menu.
 
 ## Development
 
@@ -79,14 +77,14 @@ npm test                  # unit, simulation, persistence and multiplayer tests 
 npm run lint              # ESLint (fetched with npx; flat config in eslint.config.js)
 npm run check             # both
 
-npm run simulate -- 3 30 4 medium          # headless AI match: seed, minutes, AIs, size
+npm run simulate -- 3 20 10 medium         # headless AI match: seed, minutes, AIs, size
 npm run preview:world -- 7 medium out.png  # world overview PNG
 npm run preview:settlement -- 1 0 40 3 out.png   # grow a settlement at a start site, write a PNG
 node tools/play.mjs shots 7 small 60       # drive the real client in headless Chromium
 node tools/save-check.mjs shots            # browser test: save, reload, continue
 node tools/mp-browser.mjs shots            # two browsers in one multiplayer room
-node tools/mobile-shots.mjs shots all       # every menu and panel: phone portrait, landscape, desktop
-node tools/perf-zoom.mjs both              # frame times while zooming and panning (desktop and phone)
+node tools/mobile-shots.mjs shots all       # every menu and HUD state: phone portrait, landscape, desktop
+node tools/perf-zoom.mjs both              # frame times while zooming, pinching and panning (desktop and phone)
 node tools/shoot.mjs "/client/debug/sprites.html?scale=3" out.png 1200 900   # screenshot any page
 ```
 
@@ -104,13 +102,13 @@ The browser tools use Playwright with a preinstalled Chromium. They look for `pl
 ```
 engine/   shared, deterministic game logic (no DOM, no Node APIs); runs on the server, in the worker and in tests
   core/        RNG and hashing, noise, heap, grid search (A*, flood), RLE
-  world/       world generation, biomes, start sites and free cities, names
+  world/       world generation, biomes, start sites, names
   settlement/  road-first settlement planner, building kinds, styles, local terrain, validator
-  sim/         Match (authoritative state and ticks), economy, expansion, trade, military, commands, saves
-  ai/          AI kingdoms (the same commands as humans)
-  net/         wire protocol: per-player snapshots (private stores stay private)
+  sim/         Match (territory, people, ticks), attacks, boats and trade, towns, alliances, commands, saves
+  ai/          AI players (the same commands as humans)
+  net/         wire protocol: per-player snapshots and territory deltas (gold stays private)
 server/   HTTP static server, WebSocket server (RFC 6455), rooms and lobby, save store
-client/   browser client: transports, client world, Canvas renderer, DOM UI, debug pages
+client/   browser client: transports, client world, Canvas renderer, compact HUD, debug pages
 tests/    node:test suites
 tools/    previews, headless simulation, browser drivers
 docs/     asset audit and design notes

@@ -51,12 +51,12 @@ const W_BIG = 1 << 20; // empty bounding box
 
 export class Match {
   /**
-   * opts: { seed, size, players: [{ name, ai?, personality? }], placementTime, timeLimit }
+   * opts: { seed, size, players: [{ name, ai?, personality? }], placementTime, timeLimit, difficulty }
    */
   constructor(opts = {}) {
     const seed = opts.seed ?? 1;
     const size = opts.size || 'medium';
-    this.opts = { placementTime: 20, timeLimit: 20 * 60, ...opts, seed, size };
+    this.opts = { placementTime: 20, timeLimit: 20 * 60, difficulty: 'normal', ...opts, seed, size };
     const dims = WORLD_SIZES[size] || WORLD_SIZES.medium;
     this.world = opts.world || generateWorld({ seed, ...dims });
     this.rng = new Rng(seed ^ 0x5eed);

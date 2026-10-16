@@ -89,7 +89,8 @@ export class Renderer {
     if (r.key.startsWith('c')) {
       const old = this.chunks.get(r.key.slice(1));
       if (old?.canvas?.close) old.canvas.close();
-      this.chunks.set(r.key.slice(1), { canvas: r.bmp, used: this.frameNo, at: this.now || 0 });
+      if (old?.half?.close) old.half.close();
+      this.chunks.set(r.key.slice(1), { canvas: r.bmp, half: r.half, used: this.frameNo, at: this.now || 0 });
       this.evictChunks();
     } else {
       const sid = Number(r.key.slice(1));
@@ -107,6 +108,7 @@ export class Renderer {
       for (const [k, v] of this.chunks) if (!old || v.used < old[1].used) old = [k, v];
       if (!old) break;
       if (old[1].canvas.close) old[1].canvas.close();
+      if (old[1].half?.close) old[1].half.close();
       this.chunks.delete(old[0]);
     }
   }
@@ -398,7 +400,7 @@ export class Renderer {
         // A freshly painted chunk fades in instead of popping.
         const fade = Math.min(1, (this.now - (c.at || 0)) / 180);
         ctx.globalAlpha = alpha * fade;
-        ctx.drawImage(c.canvas, dx, dy, size, size);
+        ctx.drawImage(scale < 0.75 && c.half ? c.half : c.canvas, dx, dy, size, size);
         if (fade < 1 && alpha >= 1) {
           ctx.globalAlpha = 1 - fade;
           ctx.imageSmoothingEnabled = false;
@@ -552,7 +554,7 @@ export class Renderer {
     const { ctx, cw } = this;
     if (!cw.snap) return;
     ctx.imageSmoothingEnabled = false;
-    const scale = Math.max(1, Math.min(3, ppt / 8));
+    const scale = Math.max(1, Math.min(3, ppt / 5));
     for (const b of cw.snap.boats) {
       const pos = this.lerpBoat(b);
       const sx = ox + (pos.x + 0.5) * ppt;

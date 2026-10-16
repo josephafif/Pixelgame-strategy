@@ -28,8 +28,17 @@ self.addEventListener('message', (e) => {
   try {
     if (m.t === 'chunk') {
       applyPatch(m.patch);
-      const bmp = renderChunk(world, m.cx, m.cy, ov).transferToImageBitmap();
-      self.postMessage({ key: m.key, bmp }, [bmp]);
+      const cv = renderChunk(world, m.cx, m.cy, ov);
+      // A half-size copy for the zoomed-out end of the pixel view: a quarter
+      // of the pixels to sample every frame.
+      const small = new OffscreenCanvas(cv.width >> 1, cv.height >> 1);
+      const g = small.getContext('2d');
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = 'medium';
+      g.drawImage(cv, 0, 0, small.width, small.height);
+      const half = small.transferToImageBitmap();
+      const bmp = cv.transferToImageBitmap();
+      self.postMessage({ key: m.key, bmp, half }, [bmp, half]);
     } else if (m.t === 'layer') {
       const r = renderSettlementLayer(world, m.L, { color: m.color });
       const bmp = r.canvas.transferToImageBitmap();

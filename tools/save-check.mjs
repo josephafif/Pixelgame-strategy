@@ -38,7 +38,7 @@ await page.click('#btn-menu');
 await page.waitForSelector('[data-go="save"]');
 const before = await page.evaluate(() => {
   const cw = window.__realm.cw;
-  return { time: cw.snap.time, towns: cw.mySettlements().map((s) => s.name).sort(), pop: cw.me.stats.pop };
+  return { time: cw.snap.time, towns: cw.snap.structures.filter((s) => s.owner === cw.you).map((s) => s.name).sort(), tiles: cw.me.tiles };
 });
 await page.click('[data-go="save"]');
 await page.waitForFunction(() => localStorage.getItem('realmwright:save:single:info'), null, { timeout: 10000 });
@@ -53,7 +53,7 @@ await page.waitForFunction(() => window.__realm?.cw?.snap?.phase === 'running', 
 await page.waitForTimeout(1500);
 const after = await page.evaluate(() => {
   const cw = window.__realm.cw;
-  return { time: cw.snap.time, towns: cw.mySettlements().map((s) => s.name).sort(), pop: cw.me.stats.pop };
+  return { time: cw.snap.time, towns: cw.snap.structures.filter((s) => s.owner === cw.you).map((s) => s.name).sort(), tiles: cw.me.tiles };
 });
 await page.screenshot({ path: `${out}/save-03-continued.png` });
 console.log('continue button:', label.replace(/\s+/g, ' ').trim());

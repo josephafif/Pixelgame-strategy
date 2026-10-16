@@ -15,6 +15,14 @@ const STYLE = {
   warlord: { share: 0.7, expandAt: 0.25, attackAt: 0.5, edge: 0.85, ratio: 0.45, trust: 0.35, towns: 0.8, ports: 0.4, outposts: 0.5 },
 };
 
+// How hard the AI plays: how big an edge it wants before attacking, how full
+// its realm must be, and how much more it wants before turning on a human.
+export const DIFFICULTY = {
+  easy: { edge: 1.6, attackAt: 0.15, human: 3, pile: 1 },
+  normal: { edge: 1, attackAt: 0, human: 1.6, pile: 2 },
+  hard: { edge: 0.85, attackAt: -0.05, human: 1.1, pile: 3 },
+};
+
 const DIR8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 const xy = (m, i) => ({ x: i % m.W, y: (i / m.W) | 0 });
 
@@ -211,13 +219,16 @@ function fight(m, p, s, mem) {
     m.exec(p.id, { type: 'attack', x: at.x, y: at.y, ratio: neutral > 40 ? s.ratio : s.ratio * 0.6 });
     return;
   }
-  if ((pressed && fill < 0.85) || fill < s.attackAt) return;
+  const D = DIFFICULTY[m.opts.difficulty] || DIFFICULTY.normal;
+  if ((pressed && fill < 0.85) || fill < s.attackAt + D.attackAt) return;
   // The weakest rival along the border, weighed by how much of it we share.
   let best = null;
   for (const [q, len, tile] of sv.contacts[p.id] || []) {
     const o = st.players[q];
     if (!o.alive || m.allied(p.id, q)) continue;
-    let edge = power(m, p) / Math.max(1, power(m, o));
+    // Humans are not ganged up on: only a few AIs may attack one at a time.
+    if (!o.ai && st.attacks.filter((a) => a.to === q && a.from !== p.id && st.players[a.from].ai).length >= D.pile) continue;
+    let edge = power(m, p) / Math.max(1, power(m, o)) / (D.edge * (o.ai ? 1 : D.human));
     if (o.traitorUntil > st.t) edge *= 1.6;
     const score = edge * (1 + Math.min(1, len / 200) * 0.5);
     if (!best || score > best.score) best = { q, tile, edge, score };
@@ -231,7 +242,7 @@ function fight(m, p, s, mem) {
   const boating = st.boats.some((b) => b.owner === p.id && b.kind === 'transport');
   if ((sv.coast[p.id] || 0) > 0 && fill > Math.max(0.6, s.attackAt) && !boating && st.t - (mem.boatAt ?? -999) > 20) {
     mem.boatAt = st.t;
-    const target = shoreTarget(m, p, s);
+    const target = shoreTarget(m, p, s, D);
     if (target >= 0) {
       const at = xy(m, target);
       m.exec(p.id, { type: 'boat', x: at.x, y: at.y, ratio: s.ratio });
@@ -240,7 +251,7 @@ function fight(m, p, s, mem) {
 }
 
 /** A shore worth landing on: empty land first, then weak rivals. */
-function shoreTarget(m, p, s) {
+function shoreTarget(m, p, s, D) {
   const st = m.state;
   const [x0, y0, x1, y1] = p.bbox;
   const cx = (x0 + x1) / 2;
@@ -251,7 +262,8 @@ function shoreTarget(m, p, s) {
     const i = m.coastTiles[m.rng.int(0, m.coastTiles.length - 1)];
     const o = m.owner[i];
     if (o === p.id || (o >= 0 && (m.allied(p.id, o) || !st.players[o].alive))) continue;
-    let value = o < 0 ? 2 : (power(m, p) / Math.max(1, power(m, st.players[o]))) * (p.personality === 'warlord' ? 1 : 0.5);
+    const q = o >= 0 ? st.players[o] : null;
+    let value = !q ? 2 : (power(m, p) / Math.max(1, power(m, q)) / (D.edge * (q.ai ? 1 : D.human))) * (p.personality === 'warlord' ? 1 : 0.5);
     if (o >= 0 && value < s.edge) continue;
     value -= Math.hypot((i % m.W) - cx, ((i / m.W) | 0) - cy) / 150;
     if (value > bestScore) {

@@ -184,7 +184,8 @@ export class GameUI {
       this.showEnd(snap);
     } else if (me && me.spawned && !me.alive && !this.fallenShown && snap.phase === 'running') {
       this.fallenShown = true;
-      this.onQuit('end', `<h2>Your realm has fallen</h2><p>${esc(me.name)} held ${pct(me.tiles / Math.max(1, this.cw.init.landTotal))} of the land at the end. The race goes on without you.</p>${this.standingsHtml(snap)}`);
+      const best = me.stats?.maxTiles ?? 0;
+      this.onQuit('end', `<h2>Your realm has fallen</h2><p>At its height ${esc(me.name)} held ${pct(best / Math.max(1, this.cw.init.landTotal))} of the land. The race goes on without you.</p>${this.standingsHtml(snap)}`);
     }
   }
 
@@ -386,6 +387,7 @@ export class GameUI {
 
   /** Long press or right click: a small menu for that spot. */
   openPopup(t, x, y) {
+    this.el.tip.hidden = true;
     this.popupAt = { sx: t.sx, sy: t.sy, x, y };
     this.refreshPopup(true);
   }
@@ -486,6 +488,10 @@ export class GameUI {
   // Desktop hover ----------------------------------------------------------------
 
   hover(e) {
+    if (this.popupAt) {
+      this.el.tip.hidden = true;
+      return;
+    }
     const t = this.r.screenToTile(e.clientX, e.clientY);
     const x = Math.floor(t.x);
     const y = Math.floor(t.y);

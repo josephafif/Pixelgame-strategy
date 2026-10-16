@@ -6,18 +6,21 @@ This document explains how the game works and why it is built the way it is. Num
 ## Principles
 
 - **One authoritative simulation.** `engine/sim/match.js` owns the game state. It advances in fixed
-  ticks of 0.25 s and changes state only through validated commands (`engine/sim/commands.js`). The
+  ticks of 0.1 s and changes state only through validated commands (`engine/sim/commands.js`). The
   same class runs on the multiplayer server, in the single-player Web Worker and in the tests. Clients
   never simulate; they render snapshots.
 - **Deterministic.** Nothing in `engine/` calls `Math.random`. All randomness comes from seeded
   hashes (`hash3`, `sfc32`). The same seed, the same commands and the same tick count give the same
   match. Tests check this, and saved games depend on it.
-- **AIs play by the human rules.** `engine/ai/ai.js` acts only through `m.exec(kid, command)`. It pays
-  the same costs and waits for the same construction and travel times. There is no fog of war, so
-  everyone, human or AI, sees the same map.
+- **AIs play by the human rules.** `engine/ai/ai.js` acts only through `m.exec(pid, command)`. There
+  is no fog of war: everyone, human or AI, sees the same map.
 - **Separated layers.** `engine/` has no DOM and no Node APIs. `server/` adds transport, rooms and save
-  files. `client/` adds rendering and UI. Settlement layouts are gameplay data, because they decide where
-  buildings stand and where roads run. The client turns them into pixel art.
+  files. `client/` adds rendering and UI. Settlement layouts are gameplay data (they decide where
+  buildings stand); the client turns them into pixel art.
+
+The game is a race for land in the spirit of OpenFront, without copying its look, code or numbers:
+territory grows tile by tile, people grow with territory, and troops push borders. What is
+Realmwright's own are the towns, which grow as generated pixel-art settlements.
 
 ## World generation (`engine/world/`)
 
@@ -36,11 +39,13 @@ This document explains how the game works and why it is built the way it is. Num
 6. Deposits (iron, coal, crystal, herbs, fish shoals, quarry stone) are placed where geology and
    biome make sense.
 
-`sites.js` surveys a location (buildable land, fertility, timber, stone, water, coast, deposits) and
-derives strengths such as *farming*, *timber*, *highland*, *maritime*, *trade* and *rare*.
-`pickTradeHubs` places the neutral free cities, spaced out and preferring coasts and rivers.
-`pickStartSites` proposes varied capital sites. These keep their distance from free cities and from
-each other, and every one of them has room for a capital (this is tested).
+`sites.js` surveys a location (buildable land, water, coast) and `pickStartSites` proposes spread-out
+starting spots with room for a town. Players may also start anywhere else on open land.
+
+The match derives three static tables from the world (`Match.analyzeTerrain`): which tiles can be
+owned (everything but open water; rivers are land that is slow to take), what a tile costs to take
+(grass and meadow 1, forest 1.3, hills 1.5, rivers 1.8, mountains 2.2, peaks 3), and the water bodies
+with their coasts, for ports and boats. Ponds smaller than 60 tiles carry no boats.
 
 ## Settlement generation (`engine/settlement/`)
 
@@ -75,7 +80,7 @@ works **roads first**:
 **Growth is incremental.** `applyStage` widens the usable radius and adds arteries. `addBuilding`
 grafts new districts onto the existing streets. Buildings and streets never move or disappear when a
 settlement grows. Walls are traced around a dilated outline of the built-up core, and arteries breach
-them through gates. Kingdom roads become streets only where they join the street network.
+them through gates.
 
 **Styles** (`styles.js`) come from the biome and change the layout as well as the art:
 
@@ -89,166 +94,143 @@ them through gates. Kingdom roads become streets only where they join the street
 | adobe | dense, flat roofs |
 | nordic | compact |
 | basalt (ash) | — |
-| free city | dense neutral hub |
 
 The same layout seed and the same sequence of operations always give the same layout.
 
-## Population, work and soldiers (`economy.js`, `military.js`)
+## Territory (`match.js`)
 
-- **Labour.** 80% of a settlement's people can work. Workplaces offer job slots by category: food,
-  wood, stone, iron and building. Workers fill high-priority categories
-  first, and equal priorities share workers in proportion to their slots. A starving realm sends
-  everyone to the fields. Idle hands forage a little food and gather a little deadwood.
-- **Growth** needs housing and food security. Houses are built automatically while there is room in
-  the layout and stage limit, wood and stone, and food that isn't running out. A starving town shrinks.
-- **Stages**:
+Every land tile has an owner (`Int16Array`, −1 for nobody). `setOwner` is the only way a tile changes
+hands; it keeps tile counts and bounding boxes, appends the tile to a change log for the clients, and
+hands over a structure standing on it.
 
-  | Stage | Needs |
-  | --- | --- |
-  | outpost → hamlet | 18 people, wood |
-  | hamlet → village | 40 people, wood, stone |
-  | village → town | 100 people, a market, wood, stone |
-  | town → city | 220 people, a market, a road to the capital, stone, iron |
+Starting: each player picks open land at least 16 tiles from other realms. They get the land within
+5 tiles that can be walked to from there (never across water), a hamlet and 1,500 people. Players who
+do not choose in time, and all AIs, get spread-out spots.
 
-  Each stage claims more land and allows more buildings and houses. A settlement that has run out of
-  room may grow a stage at three quarters of the usual population.
-- **Soldiers come from the workforce.**
-  - Recruiting needs barracks (10 recruits training at once), equipment and training time: 18–40 s.
-    Infantry costs 1 iron each, archers 4 wood, siege engines 40 wood and 10 iron (towns and cities
-    only).
-  - Every recruit leaves the workforce immediately.
-  - Soldiers eat food and cost gold every second; unpaid soldiers lose morale and desert.
-  - A militia levy takes up to 15% of the people in 6 s. It is weak, and production suffers.
-  - Demobilising returns 70% of the equipment, and the people go back to work after 12 s.
+Once a second, `survey()` scans the map: who borders whom and how long each border is (with one
+sample tile per border, which the AI uses as a target), how much unclaimed land each realm touches,
+coast lengths and exact bounding boxes. Every two seconds a two-pass chamfer distance transform finds,
+for each realm, the point deepest inside its land; the client writes the realm's name there, sized by
+that depth. The survey is part of the saved state, so a loaded game makes the same decisions.
 
-## Economy
+## People, troops and gold
 
-The economy is deliberately small: four resources plus gold, and eight buildings.
+- **Limit:** 3,000 + 8 per tile + 6,000 / 12,000 / 20,000 / 30,000 for each hamlet / village / town /
+  city.
+- **Growth** is logistic (7% per second at low numbers, slowing toward the limit). Above the limit
+  people drift back down.
+- **Troops and workers** are two pools. Growth goes to both by the troop slider (default 60% troops),
+  and 5% of the gap to the slider is closed each second, so moving it takes effect over half a minute.
+  Attacks take troops only.
+- **Gold:** 0.004 per worker per second plus 1.5 per town level per second, plus trade.
 
-| Resource | Used for |
-| --- | --- |
-| Food | feeding people and soldiers |
-| Wood | houses, buildings, roads, archers |
-| Stone | bigger towns, walls, bridges |
-| Iron | infantry, siege engines, cities |
-| Gold | taxes and trade; pays soldiers |
+## Attacks (`attack.js`)
 
-| Building | Does | Needs |
+An attack is `{ from, to, troops }` with its own frontier: a binary heap of target tiles next to the
+attacker's land. It starts from every such tile along the shared border (or from a beach for troops
+landing by boat). Each step it takes the cheapest tiles off the heap. A captured tile adds its
+neighbours with a key equal to its own plus the neighbour's terrain cost (times a little noise), so the
+border advances as a wave front, slower through rough country. A tap sets a focus point that makes
+steps toward it a little cheaper, so the push leans that way.
+
+- **Speed:** 2–30 tiles per step into unclaimed land and 1–14 against a realm, growing with the square
+  root of the troops.
+- **Unclaimed land** costs 1.2 troops per tile times terrain.
+- **A rival's tile** costs 1 + density × terrain × defence × 2.4 × ratio, where:
+  - density is the defender's troops per tile;
+  - defence is ×2.5 within 9 tiles of one of the defender's outposts and ×0.5 while the defender is a
+    traitor;
+  - ratio = (defender troops / attack troops)^0.35, clamped to 0.4–2.5, so a big attack on a thin
+    garrison pays less and the reverse.
+
+  The defender loses half of the local density × terrain × defence per tile.
+- An attack ends when its troops cannot pay for the next tile or it has no frontier left. What
+  remains goes home. Calling one off (✕) brings 75% home.
+- Two attacks between the same realms merge. Attacks in opposite directions first cancel troops.
+- A realm left with no land has fallen.
+
+## Boats and trade (`naval.js`)
+
+**Troop boats.** A tap on a shore you do not border sends a boat (at most three at sea). The landing
+beach is the nearest coastal tile to the tap. The route comes from an A* search over the water,
+running from that beach back to the nearest of your own shores. Boats sail at 12 tiles per second. On
+arrival the troops take the beach (paying its cost) and start an attack from there. Troops landing on
+their own or an ally's land go home.
+
+**Trade ships.** Every port keeps one ship at sea. Every 12–22 s it sends one to a port of another
+player on the same water, favouring allies and nearer ports. When it arrives both owners get
+60 + 3 gold per tile of route (×1.5 between allies). Routes are cached.
+
+## Towns, ports and outposts (`structures.js`)
+
+The only buildings. Each is a settlement layout from the planner, and whoever takes the tile it stands
+on takes it.
+
+| | Cost (grows with each one built) | What it does |
 | --- | --- | --- |
-| Farm | food | fertile land |
-| Fishery | food | coast, lake or river |
-| Lumber camp | wood | forest |
-| Quarry | stone | rock, hills |
-| Iron mine | iron | an iron vein (hamlet or larger) |
-| Market | caravans to the free cities, richer townsfolk | hamlet or larger, one per town |
-| Barracks | trains soldiers | hamlet or larger |
-| Grand Exchange | the prosperity victory | the capital, as a city |
+| Town | 1,500 gold (×1.5) | More people and gold; grows itself, can be raised |
+| Port | 2,000 gold (×1.6) | Must stand on the coast; sends trade ships |
+| Outpost | 1,000 gold (×1.35) | Land within 9 tiles is 2.5× harder to take |
 
-People only eat food. Prosperity rises with town size and markets and falls with hunger, unpaid
-soldiers, war weariness and unrest; it sets taxes and growth. Output scales with the settlement's
-site survey (fertility, forest cover, deposits). Towns without a road to the capital lose 15–40% of
-what they ship. Storage grows with stages, and food spoils slowly.
+Towns must be 12 tiles apart, and all structures 6 tiles apart. Raising a town costs
+1,200 × level × 1.5^(level−1) gold. A town goes from hamlet to village, town and city, which is
+planner stages 1–4: palisade walls at town level and stone walls at city level. Houses and civic
+buildings (fields, a market, a temple, a granary, a tavern…) go up on their own, a few planner
+operations per step across all towns. A port is a harbour village; an outpost is a walled post with
+towers.
 
-## Expansion (`expansion.js`)
+## Alliances (`diplomacy.js`)
 
-- **No fog of war.** The whole map, every town and every army is visible to everyone.
-- **Settlers** cost 60 wood, 50 food and 12 people from a settlement of at least 40. They walk
-  to a valid site within reach and found an outpost with 12 people, which starts small and grows
-  like any town.
-- **Roads** are surveyed with A*, paid in wood (and stone for bridges), and built tile by tile by the
-  connected settlements' builders. Roads double movement speed and link towns to the capital for
-  logistics.
-
-## Trade (`trade.js`)
-
-- **Market.** The free cities share one market with a stock per resource.
-  `price = base × (equilibrium / stock)^0.75`, clamped to 0.3–4 × base. Selling raises the stock and
-  lowers the price; stocks drift back toward equilibrium over time.
-- **Orders.** Standing buy and sell orders (amount, price limit, stock level to keep) are carried out
-  by caravans. Each market supports two caravans. Caravans carry 40 units, take real travel time
-  over land (faster on roads), and pay a fare per tile. At war, enemy armies can
-  seize them.
-- **Agreements** are proposed between realms: give X every N seconds for Y, a number of times. They are
-  delivered by caravan, and they stop at war or when a side cannot pay.
-
-## War (`military.js`)
-
-- **Diplomacy.** Kingdoms start at peace with closed borders: armies cannot enter. Declaring war opens
-  borders and cancels agreements. War weariness grows over time and lowers prosperity.
-- **Units:**
-
-  | Unit | Role |
-  | --- | --- |
-  | infantry | solid all-round |
-  | archers | strong defenders |
-  | siege engines | break walls; need siege works, crewed by 3 |
-  | militia | levy |
-
-- **Armies** move along A* paths (0.75 tiles/s off-road). They carry 150 s of supply and refill inside
-  or near their own territory (6 tiles). Out of supply they starve and lose morale.
-- **Battles** start when hostile armies meet. Damage depends on attack against defence:
-  - defenders gain 1.25× on hills, 1.5× in mountains and 1.2× in forest;
-  - attackers fight at 0.7× across an unbridged river.
-
-  Broken armies retreat home.
-- **Sieges.**
-  - Walls have hit points and a defence multiplier: palisade 240 hp ×1.5, stone 700 hp ×2.0,
-    fortress 1500 hp ×2.6.
-  - Walls must be breached before the garrison can be attacked.
-  - A besieged town stops growing and may levy militia.
-  - A town is taken when its walls are down and its garrison is gone. Its unfinished projects are lost,
-    and it loses about a quarter of its people. It suffers unrest (lower output, no new houses or projects) for a while,
-    and the winner loots part of the loser's stores.
-  - Losing the capital moves the court to the largest remaining town.
-  - A kingdom with no towns falls.
+A player asks; the other accepts or declines within 20 s (asking someone who already asked you seals
+it). Allies cannot attack each other; attacks between them are called off when they ally, and boats
+landing on an ally's shore go home. An alliance lasts five minutes and can be renewed in its last
+minute. Whoever breaks one is a traitor for a minute: their land is half as hard to take, and AIs
+favour them as targets.
 
 ## Victory
 
-The match ends in one of four ways:
+- holding 80% of all land;
+- being the last realm standing;
+- holding the most land when the time limit (20 minutes by default) runs out.
 
-- **Conquest:** the last realm standing wins.
-- **Domination:** two thirds of all kingdom towns and 60% of all people, held for 4 minutes. Every
-  realm is warned when the clock starts.
-- **Prosperity:** build the Grand Exchange in your capital city and hold it for 3 minutes.
-- **Score:** the best score when the time limit runs out.
+Headless AI matches (`npm run simulate`) end by domination after 8–14 minutes on the medium and large
+maps.
 
 ## AI (`engine/ai/ai.js`)
 
-Each AI thinks every 2 s with a personality:
+Each AI thinks once a second, staggered across ticks. It reads the survey and issues ordinary
+commands.
 
-- **builder:** steady growth and expansion;
-- **merchant:** trade, agreements and the Grand Exchange;
-- **warlord:** an early army, forward settling and attacks.
+1. Set its troop slider (builders 55%, merchants 45%, warlords 70%).
+2. Answer alliance requests. Strong neighbours are welcome. Warlords refuse weak neighbours, which
+   they see as prey. Nobody allies with a traitor or with the other big realm near the end.
+3. Ask much stronger neighbours for an alliance, renew alliances worth keeping, and (warlords only)
+   break one with a weak ally when nothing else is left to take.
+4. Spend gold: a new town per ~650 tiles, placed deep inside its land; raise towns; ports on the
+   coast; outposts facing the most dangerous neighbour.
+5. Attack: unclaimed land first; then the neighbour against which it has the best troop ratio, when
+   the ratio passes its temperament's threshold and its realm is full enough; with no land targets, it
+   sends a boat to a shore across the water.
 
-It does the following:
-
-- **Labour priorities.** It sets them from its stocks. Hunger and wood shortage use hysteresis, so
-  workers don't flip-flop.
-- **Development.** It ranks wanted buildings and stage-ups and saves for the most important. Producers
-  of a resource it is saving for get to skip the savings.
-- **Expansion.** It sends settlers to the best sites in reach. Warlords favour sites toward their
-  weakest neighbour.
-- **Trade.** Surpluses go to market, shortages are bought, and merchants propose agreements.
-- **War.** It declares war on weaker neighbours near its frontier. It attacks the weakest town
-  in reach from its best-held town, relieves its own besieged towns, offers or accepts peace when
-  losing or weary, and keeps its army within the upkeep it can afford.
-
-Headless AI matches (`npm run simulate`) measure this behaviour: growth, trade, wars, sieges and
-captures.
+The difficulty setting scales the edge an AI wants before attacking, and how much more it wants
+before attacking a human (easy ×3, normal ×1.6, hard ×1.1). It also caps how many AIs may attack the
+same human at once (1, 2 or 3).
 
 ## Network protocol (`engine/net/protocol.js`)
 
 The server sends each player:
 
-- an `init` with the seed, size and suggested sites. The client regenerates the terrain locally from
-  the seed instead of downloading it;
-- a `snap` every 0.5 s with public kingdom data, that player's private stocks, all settlements,
-  armies and parties (no fog of war; rivals' garrisons are only estimated), and new events tracked
-  by sequence number;
-- versioned bulk messages (`terr`, `roads`, `layout`), run-length encoded and only when they change.
+- an `init` with the seed, size, total land and suggested start spots. The client regenerates the
+  terrain locally from the seed instead of downloading it;
+- the territory once (`terr`, run-length encoded); after that every `snap` carries only the tiles
+  that changed since the last one (`td`). Changed tiles are grouped by new owner, sorted and
+  gap-encoded. A player who falls too far behind the change log gets the full map again;
+- a `snap` five times a second with every player's public data (land, people, troops), that player's
+  gold and slider, towns, ports and outposts, boats, attacks, alliances, their own requests, label
+  spots and new events;
+- `layout` messages when a settlement layout changes.
 
-Clients send `{ t: 'cmd', cmd }`. Commands are rate-limited and validated by the same code path the AI
-uses.
+Clients send `{ t: 'cmd', cmd }`. Commands are validated by the same code path the AI uses.
 
 `server/ws.js` is a small RFC 6455 implementation (no dependencies). `server/rooms.js` handles the
 lobby, seats, reconnect tokens, spectators for late arrivals and per-client snapshot streaming with
@@ -258,13 +240,14 @@ backpressure.
 
 A save stores the following; the world is not stored but regenerated from its seed:
 
-- the options and the full state;
+- the options and the full state (attacks keep their frontier heaps, boats their routes);
 - every layout;
-- the per-tile masks (territory, roads, structures, exploration);
-- the RNG position, path cache and pending commands.
+- the territory and the structure mask;
+- the RNG position and pending commands.
 
 A fingerprint of the regenerated world must match the saved one. A loaded match continues exactly as
-the original would have, and the tests check this.
+the original would have, and the tests check this. Saves from earlier versions of the game are
+refused with a clear message.
 
 - **Single player:** saves are kept in the browser's localStorage or as a downloadable file, and the
   game autosaves every 3 minutes.
@@ -280,24 +263,29 @@ the original would have, and the tests check this.
 All art is drawn procedurally at runtime into pixel buffers (`pix.js`) with nearest-neighbour scaling.
 No image assets are used.
 
-- **Terrain chunks** (32×32 tiles at 16 px per tile) are painted per pixel. They have ragged, noisy
-  biome borders, smooth river channels, relief lighting interpolated per tile, shore foam, ground
-  speckles, tufts and flowers. Chunks and settlement pictures are painted by a pool of up to three
-  workers (`paint-pool.js`, `paint-worker.js`) into OffscreenCanvas and returned as ImageBitmaps, so
-  zooming and panning never wait for pixel work. The renderer asks for what is nearest the centre of
-  the view first, plus a ring of chunks ahead; until a picture arrives, the old one or the overview
-  stands in. `tools/perf-zoom.mjs` measures frame times over a scripted zoom-and-pan.
-- **Nature** (`nature.js`): deciduous and pine trees, palms, dead trees, rocks, reeds, cacti and snowy
-  variants, each with outlines and shadows.
-- **Buildings** (`buildings.js`): every kind in every style and level. Examples are pitched, thatched,
-  snowy and flat adobe roofs with parapets, and keeps that grow from a hall and donjon into curtain
-  walls with towers. Walls, gates, palisades, piers, fields and decor come from `decor.js`.
-  `settlement-layer.js` prerenders each settlement, y-sorted, and rebuilds it only when its layout
-  version changes.
-- **Overlays:** territory fill and borders (cached paths per colour), armies, caravans and selections.
-- **Zoomed out:** a one-pixel-per-tile strategic overview with labels, plus a minimap.
+- **Camera.** Zoom is continuous: pinches and trackpads follow the fingers, while wheel notches,
+  double taps and keys ease in log space over about 0.2 s. When a gesture ends, the camera eases to
+  the nearest "crisp" scale (whole pixels per tile, and whole multiples or halves of the 16-pixel art),
+  so pixel art never rests at an uneven size. A flick keeps the map gliding.
+- **Strategic view** (below 8 pixels per tile): the one-pixel-per-tile terrain overview and the
+  territory image, both drawn from the visible rectangle only, with town, port and outpost markers.
+- **Territory image** (`territory.js`): one pixel per tile, a translucent fill in the owner's colour
+  and an opaque rim along borders (lighter for your own). Changed tiles and their neighbours are
+  repainted in the ImageData, and only the touched rectangle is uploaded.
+- **Pixel view** (from 8 pixels per tile, fading in up to 11): terrain chunks (32×32 tiles at 16 px)
+  and settlement pictures. A pool of up to three workers (`paint-pool.js`, `paint-worker.js`) paints
+  them into OffscreenCanvas and returns ImageBitmaps, plus a half-size copy of each chunk for the
+  zoomed-out end. Chunks are requested from 6 pixels per tile on, before they are needed, nearest the
+  centre first, plus a ring ahead. New chunks fade in over the overview instead of popping. Borders
+  are crisp lines built per colour for the visible tiles only.
+- **Labels:** each realm's name and troops at its deepest point, prerendered per text and size and
+  gliding when the spot moves.
+- **Nature, buildings, walls** (`nature.js`, `buildings.js`, `decor.js`): trees, rocks, every building
+  kind in every style and level, walls, gates, piers, fields, boats and ships.
 
-`client/debug/` has pages for inspecting terrain, settlement growth in every style and sprite sheets.
+`tools/perf-zoom.mjs` measures frame times over scripted eased zooms, a pinch and pans on a desktop
+and a phone profile. `client/debug/` has pages for inspecting terrain, settlement growth in every style
+and sprite sheets.
 
 ## Verification
 
@@ -305,11 +293,11 @@ No image assets are used.
   - world generation (determinism, biome balance, rivers, sites);
   - settlements (validity after every operation, incremental growth, determinism, serialisation,
     performance);
-  - simulation (labour, starvation, recruitment, upkeep, levies, expansion, roads, prices, caravans,
-    agreements, borders, terrain combat, sieges and capture, AI growth, determinism, start sites,
-    domination);
-  - persistence;
-  - multiplayer over real WebSockets (shared match, private data, validation, reconnect, restart
-    with restore).
+  - simulation (starting, growth and limits, gold, attacks on empty land and rivals, terrain, outposts,
+    alliances and betrayal, boats, trade ships, towns growing into cities, both victories, AI matches,
+    determinism, territory deltas);
+  - persistence (a loaded match continues identically);
+  - multiplayer over real WebSockets (shared match, private data, validation, deltas, reconnect,
+    restart with restore).
 - Browser tools in `tools/` drive the real client headlessly and take screenshots, which were inspected
   during development.

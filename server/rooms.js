@@ -29,6 +29,7 @@ export function sanitizeOpts(o = {}, prev = {}) {
     ais: num(o.ais ?? prev.ais, prev.ais ?? DEFAULT_AIS[size], 0, MAX_AIS),
     placementTime: num(o.placementTime ?? prev.placementTime, prev.placementTime ?? 20, 10, 120),
     timeLimit: num(o.timeLimit ?? prev.timeLimit, prev.timeLimit ?? 20, 5, 60),
+    difficulty: ['easy', 'normal', 'hard'].includes(o.difficulty) ? o.difficulty : prev.difficulty || 'normal',
   };
 }
 
@@ -166,7 +167,7 @@ export class Room {
     const players = humans.map((m) => ({ name: m.name }));
     const total = Math.min(MAX_PLAYERS + MAX_AIS, players.length + this.opts.ais);
     for (let i = players.length; i < total; i++) players.push({ ai: true, personality: PERSONALITIES[i % 3] });
-    this.match = new Match({ seed: this.opts.seed, size: this.opts.size, players, placementTime: this.opts.placementTime, timeLimit: this.opts.timeLimit * 60 });
+    this.match = new Match({ seed: this.opts.seed, size: this.opts.size, players, placementTime: this.opts.placementTime, timeLimit: this.opts.timeLimit * 60, difficulty: this.opts.difficulty });
     humans.forEach((m, k) => {
       m.kid = k;
     });

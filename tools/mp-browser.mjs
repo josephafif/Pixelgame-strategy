@@ -48,8 +48,8 @@ for (const p of [a, b]) await p.waitForFunction(() => window.__realm.cw.snap.pha
 await a.waitForTimeout(3000);
 await a.screenshot({ path: `${out}/03-running-a.png` });
 await b.screenshot({ path: `${out}/04-running-b.png` });
-const sa = await a.evaluate(() => ({ you: window.__realm.cw.you, tick: window.__realm.cw.snap.tick, kingdoms: window.__realm.cw.snap.kingdoms.map((k) => k.name) }));
-const sb = await b.evaluate(() => ({ you: window.__realm.cw.you, tick: window.__realm.cw.snap.tick, kingdoms: window.__realm.cw.snap.kingdoms.map((k) => k.name) }));
+const sa = await a.evaluate(() => ({ you: window.__realm.cw.you, tick: window.__realm.cw.snap.tick, players: window.__realm.cw.snap.players.map((k) => k.name) }));
+const sb = await b.evaluate(() => ({ you: window.__realm.cw.you, tick: window.__realm.cw.snap.tick, players: window.__realm.cw.snap.players.map((k) => k.name) }));
 console.log(JSON.stringify(sa), JSON.stringify(sb));
 await browser.close();
 await srv.close();

@@ -151,13 +151,14 @@ function titleMenu(err = '') {
 const DEFAULT_AIS = { small: 6, medium: 10, large: 16 };
 
 function singleSetup() {
-  const o = store.get('single2', { name: 'House Ardent', size: 'medium', ais: 10, timeLimit: 20 });
+  const o = store.get('single2', { name: 'House Ardent', size: 'medium', ais: 10, timeLimit: 20, difficulty: 'normal' });
   const aiOptions = (n) => [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24].map((k) => `<option ${k === n ? 'selected' : ''}>${k}</option>`).join('');
   showModal(`<h2>A new realm</h2>
     <label>Your realm <input id="f-name" value="${esc(o.name)}" maxlength="20"></label>
     <label>World seed <input id="f-seed" type="number" value="${Math.floor(Math.random() * 99999) + 1}"></label>
     <label>Map size <select id="f-size">${['small', 'medium', 'large'].map((s) => `<option ${s === o.size ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
     <label>AI rivals <select id="f-ais">${aiOptions(o.ais)}</select></label>
+    <label>Rivals play <select id="f-diff">${['easy', 'normal', 'hard'].map((d) => `<option value="${d}" ${d === (o.difficulty || 'normal') ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
     <label>Time limit (min) <input id="f-time" type="number" value="${o.timeLimit}" min="5" max="60"></label>
     <p class="small muted">Rivals are builders, merchants and warlords and follow the same rules as you. A match takes 10 to 20 minutes; when time runs out, the realm with the most land wins.</p>
     <div class="footer"><button class="btn" data-go="title">Back</button><button class="btn primary" data-go="start-single">Begin</button></div>`);
@@ -211,6 +212,7 @@ function lobbyScreen(room, me, isHost) {
     <label>World seed <input id="o-seed" type="number" value="${o.seed}" ${isHost ? '' : 'disabled'}></label>
     <label>Map size <select id="o-size" ${isHost ? '' : 'disabled'}>${['small', 'medium', 'large'].map((s) => `<option ${s === o.size ? 'selected' : ''}>${s}</option>`).join('')}</select></label>
     <label>AI rivals <input id="o-ais" type="number" min="0" max="24" value="${o.ais}" ${isHost ? '' : 'disabled'}></label>
+    <label>Rivals play <select id="o-diff" ${isHost ? '' : 'disabled'}>${['easy', 'normal', 'hard'].map((d) => `<option value="${d}" ${d === (o.difficulty || 'normal') ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
     <label>Time to choose a start (s) <input id="o-place" type="number" min="10" max="120" value="${o.placementTime}" ${isHost ? '' : 'disabled'}></label>
     <label>Time limit (min) <input id="o-time" type="number" min="5" max="60" value="${o.timeLimit}" ${isHost ? '' : 'disabled'}></label>
     <div class="footer"><button class="btn" data-go="leave">Leave</button>${isHost ? '<span><button class="btn" data-go="save-opts">Save settings</button> <button class="btn primary" data-go="start-room">Start match</button></span>' : '<span class="muted">Waiting for the host…</span>'}</div>`);
@@ -323,8 +325,9 @@ function startSingle() {
     size: $('f-size').value,
     ais: Number($('f-ais').value),
     timeLimit: Number($('f-time').value) || 20,
+    difficulty: $('f-diff').value,
   };
-  store.set('single2', { name: o.name, size: o.size, ais: o.ais, timeLimit: o.timeLimit });
+  store.set('single2', { name: o.name, size: o.size, ais: o.ais, timeLimit: o.timeLimit, difficulty: o.difficulty });
   endSession();
   loading('Raising the realm…');
   runGame(new WorkerTransport(o), true);
@@ -396,7 +399,7 @@ modal.addEventListener('click', (e) => {
     endSession();
     multiSetup();
   } else if (go === 'save-opts' || go === 'start-room') {
-    const opts = { seed: Number($('o-seed').value), size: $('o-size').value, ais: Number($('o-ais').value), placementTime: Number($('o-place').value), timeLimit: Number($('o-time').value) };
+    const opts = { seed: Number($('o-seed').value), size: $('o-size').value, ais: Number($('o-ais').value), placementTime: Number($('o-place').value), timeLimit: Number($('o-time').value), difficulty: $('o-diff').value };
     mp.transport.send({ t: 'opts', opts });
     if (go === 'start-room') setTimeout(() => mp.transport.send({ t: 'start' }), 100);
   }

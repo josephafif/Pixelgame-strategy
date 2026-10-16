@@ -54,7 +54,7 @@ self.addEventListener('message', (e) => {
       const ais = o.ais ?? 10;
       const pers = o.personalities || [];
       for (let i = 0; i < ais; i++) players.push({ ai: true, personality: pers[i] || PERSONALITIES[(i + 1) % 3] });
-      match = new Match({ seed: o.seed ?? 1, size: o.size || 'medium', players, placementTime: 0, timeLimit: (o.timeLimit ?? 20) * 60 });
+      match = new Match({ seed: o.seed ?? 1, size: o.size || 'medium', players, placementTime: 0, timeLimit: (o.timeLimit ?? 20) * 60, difficulty: o.difficulty || 'normal' });
     }
     view = new PlayerView(match, 0);
     self.postMessage(initMessage(match, 0));

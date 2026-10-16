@@ -1,6 +1,6 @@
-// Screenshots of every menu and panel on a phone (touch emulation), portrait
-// and landscape, plus a desktop reference. Taps go through real touch events.
-// Usage: node tools/mobile-shots.mjs outDir [portrait|landscape|desktop|all]
+// Screenshots of every menu and HUD state on a phone (touch emulation),
+// portrait and landscape, plus a desktop reference. Taps go through real
+// touch events. Usage: node tools/mobile-shots.mjs outDir [portrait|landscape|desktop|all]
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -35,7 +35,6 @@ async function shoot(page, name) {
 }
 
 async function tap(page, selector) {
-  // Locators re-resolve the element, so a panel redraw between finding and tapping is harmless.
   const el = page.locator(selector).first();
   await el.waitFor({ state: 'visible', timeout: 10000 });
   try {
@@ -44,6 +43,26 @@ async function tap(page, selector) {
   } catch (e) {
     throw new Error(`${page.__dev}: could not tap ${selector}: ${e.message.split('\n')[0]}`);
   }
+}
+
+/** Tap (or click) the map at a tile. */
+async function tapTile(page, x, y) {
+  const p = await page.evaluate(([tx, ty]) => window.__realm.renderer.tileToScreen(tx + 0.5, ty + 0.5), [x, y]);
+  if (DEVICES[page.__dev].hasTouch) await page.touchscreen.tap(p.x, p.y);
+  else await page.mouse.click(p.x, p.y);
+}
+
+/** Long-press (or right-click) the map at a tile. */
+async function holdTile(page, x, y) {
+  const p = await page.evaluate(([tx, ty]) => window.__realm.renderer.tileToScreen(tx + 0.5, ty + 0.5), [x, y]);
+  if (!DEVICES[page.__dev].hasTouch) {
+    await page.mouse.click(p.x, p.y, { button: 'right' });
+    return;
+  }
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: p.x, y: p.y }] });
+  await page.waitForTimeout(650);
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 }
 
 async function run(dev) {
@@ -64,50 +83,74 @@ async function run(dev) {
   await tap(page, '[data-go="multi"]');
   await shoot(page, `${dev}-04-multiplayer`);
   await tap(page, '[data-go="title"]');
-  // A game, started the same way a player would.
+  // A game, started the way a player would.
   await tap(page, '[data-go="single"]');
   await page.fill('#f-seed', '7');
   await page.selectOption('#f-size', 'small');
+  await page.selectOption('#f-ais', '6');
   await tap(page, '[data-go="start-single"]');
   await page.waitForFunction(() => window.__realm?.cw?.snap, null, { timeout: 60000 });
-  await page.waitForTimeout(1500);
-  await shoot(page, `${dev}-05-placement`);
-  await tap(page, '[data-act="site"]');
-  await page.waitForTimeout(800);
-  await shoot(page, `${dev}-06-placement-site`);
-  await tap(page, '[data-act="place"]');
+  await page.waitForTimeout(1200);
+  await shoot(page, `${dev}-05-choose-start`);
+  const site = await page.evaluate(() => {
+    const s = window.__realm.cw.init.startSites[0];
+    window.__realm.renderer.flyTo(s.x, s.y);
+    return s;
+  });
+  await page.waitForTimeout(600);
+  await tapTile(page, site.x, site.y);
+  await shoot(page, `${dev}-06-start-here`);
+  await tap(page, '[data-spawn="go"]');
   await page.waitForFunction(() => window.__realm.cw.snap.phase === 'running', null, { timeout: 30000 });
   await page.waitForTimeout(2500);
-  await shoot(page, `${dev}-07-town`);
-  // Realm tabs: the bottom bar on phones, the tab strip on desktop.
-  for (const [i, tab] of ['realm', 'trade', 'diplomacy', 'chronicle'].entries()) {
-    const sel = await page.evaluate((t) => {
-      for (const q of [`[data-dock="${t}"]`, `[data-tab="${t}"]`]) {
-        const b = document.querySelector(q);
-        if (b && b.offsetParent) return q;
-      }
-      return null;
-    }, tab);
-    if (!sel) continue;
-    await tap(page, sel);
-    await shoot(page, `${dev}-${String(8 + i).padStart(2, '0')}-${tab}`);
-  }
-  // Back to the town, with a section opened.
-  if (await page.evaluate(() => !!document.querySelector('[data-dock="town"]')?.offsetParent)) {
-    await tap(page, '[data-dock="town"]');
-    await shoot(page, `${dev}-13-town-again`);
-    await tap(page, '#left [data-grip]');
-    await shoot(page, `${dev}-14-town-full`);
-    await tap(page, '[data-act="mode-road"]');
-    await shoot(page, `${dev}-15-road-mode`);
-    const box = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
-    await page.touchscreen.tap(Math.round(box.w * 0.3), Math.round(box.h * 0.35));
-    await shoot(page, `${dev}-16-road-preview`);
-    await tap(page, '[data-hint="cancel"]');
-  }
-  // In-game menu.
+  await shoot(page, `${dev}-07-running`);
+  // Attack the empty land next to us.
+  const edge = await page.evaluate(() => {
+    const cw = window.__realm.cw;
+    for (let i = 0; i < cw.owner.length; i++) {
+      if (cw.owner[i] !== -1 || !cw.land[i]) continue;
+      const x = i % cw.W;
+      if (cw.owner[i + 4] === cw.you || cw.owner[i - 4] === cw.you) return { x, y: (i / cw.W) | 0 };
+    }
+    return null;
+  });
+  await tapTile(page, edge.x, edge.y);
+  await page.waitForTimeout(3000);
+  await shoot(page, `${dev}-08-attack`);
+  await tap(page, '#btn-board');
+  await shoot(page, `${dev}-09-leaderboard`);
+  await tap(page, '#btn-board');
+  // A long press on a rival opens the small menu.
+  await page.evaluate(() => window.__realm.transport.setSpeed(4));
+  await page.waitForTimeout(8000);
+  await page.evaluate(() => window.__realm.transport.setSpeed(1));
+  const rival = await page.evaluate(() => {
+    const cw = window.__realm.cw;
+    const spot = cw.snap.labels.find((l, k) => l && k !== cw.you);
+    window.__realm.renderer.centerOn(spot[0], spot[1], 4);
+    return { x: spot[0], y: spot[1] };
+  });
+  await page.waitForTimeout(400);
+  await holdTile(page, rival.x, rival.y);
+  await shoot(page, `${dev}-10-rival-menu`);
+  await tapTile(page, rival.x + 3, rival.y + 3);
+  await page.evaluate(() => window.__realm.ui.closePopup());
+  // Our own town: zoomed in, with its menu.
+  const home = await page.evaluate(() => {
+    const cw = window.__realm.cw;
+    const s = cw.snap.structures.find((q) => q.owner === cw.you);
+    window.__realm.renderer.centerOn(s.x, s.y, 16);
+    return { x: s.x, y: s.y };
+  });
+  await page.waitForTimeout(2500);
+  await holdTile(page, home.x, home.y);
+  await shoot(page, `${dev}-11-town-menu`);
+  await page.evaluate(() => window.__realm.ui.closePopup());
+  await tap(page, '[data-build="town"]');
+  await shoot(page, `${dev}-12-build-mode`);
+  await tap(page, '[data-hint="cancel"]');
   await tap(page, '#btn-menu');
-  await shoot(page, `${dev}-12-menu`);
+  await shoot(page, `${dev}-13-menu`);
   await ctx.close();
 }
 

@@ -28,41 +28,47 @@ await page.goto(`http://localhost:${port}/client/?autostart=1&seed=${seed}&size=
 await page.waitForFunction(() => window.__realm && window.__realm.cw && window.__realm.cw.snap, null, { timeout: 60000 });
 await page.waitForTimeout(800);
 await page.screenshot({ path: `${out}/01-placement.png` });
-// Place the capital on the first suggested site.
+// Start on the first suggested site.
 await page.evaluate(() => {
   const s = window.__realm.cw.init.startSites[0];
-  window.__realm.ui.clickTile({ x: s.x + 0.5, y: s.y + 0.5 });
+  window.__realm.renderer.centerOn(s.x, s.y);
+  window.__realm.ui.tapTile({ x: s.x + 0.5, y: s.y + 0.5 });
 });
 await page.waitForTimeout(300);
-await page.screenshot({ path: `${out}/02-survey.png` });
+await page.screenshot({ path: `${out}/02-start-here.png` });
 await page.evaluate(() => {
   const s = window.__realm.cw.init.startSites[0];
   window.__realm.transport.command({ type: 'place', x: s.x, y: s.y });
 });
 await page.waitForFunction(() => window.__realm.cw.snap.phase === 'running', null, { timeout: 30000 });
 await page.waitForTimeout(2500);
-await page.screenshot({ path: `${out}/03-capital.png` });
-// Play a little: order buildings, recruit, scout.
-await page.evaluate(() => {
-  const r = window.__realm;
-  const cap = r.cw.settlement(r.cw.me.capital);
-  for (const kind of ['farm', 'lumber', 'quarry', 'market']) r.transport.command({ type: 'build', sid: cap.id, kind });
-  r.transport.command({ type: 'priority', cat: 'build', level: 3 });
+await page.screenshot({ path: `${out}/03-start.png` });
+// Play a little: claim the land around, and keep expanding while time passes.
+const expand = () => page.evaluate(() => {
+  const { cw, transport } = window.__realm;
+  for (let i = 0; i < cw.owner.length; i++) {
+    if (cw.owner[i] === -1 && cw.land[i] && (cw.owner[i + 1] === cw.you || cw.owner[i - 1] === cw.you)) {
+      transport.command({ type: 'attack', x: i % cw.W, y: (i / cw.W) | 0, ratio: 0.4 });
+      return;
+    }
+  }
 });
+await expand();
 await page.waitForTimeout(1500);
-await page.screenshot({ path: `${out}/03b-orders.png` });
+await page.screenshot({ path: `${out}/03b-attack.png` });
 await page.evaluate(() => window.__realm.transport.setSpeed(8));
 const t0 = Date.now();
 while (Date.now() - t0 < Number(secs) * 1000) {
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(3000);
+  await expand();
 }
 await page.evaluate(() => window.__realm.transport.setSpeed(1));
 await page.waitForTimeout(2500);
 await page.screenshot({ path: `${out}/04-later.png` });
-await page.evaluate(() => { window.__realm.renderer.setZoom(4); });
+await page.evaluate(() => { window.__realm.renderer.zoomTo(3); });
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/05-strategic.png` });
-const info = await page.evaluate(() => { const cw = window.__realm.cw; return { t: cw.snap.time, me: cw.me.stats, chunks: window.__realm.renderer.chunks.size }; });
+const info = await page.evaluate(() => { const cw = window.__realm.cw; return { t: cw.snap.time, tiles: cw.me.tiles, pop: cw.me.pop, troops: cw.me.troops, gold: cw.me.gold, alive: cw.me.alive, chunks: window.__realm.renderer.chunks.size }; });
 console.log(JSON.stringify(info), 'errors', errors.length);
 await browser.close();
 server.close();
