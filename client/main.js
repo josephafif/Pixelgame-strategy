@@ -174,13 +174,17 @@ function helpScreen() {
     </div><div class="footer"><span></span><button class="btn" data-go="title">Back</button></div>`);
 }
 
+// A static copy of the client (e.g. on Netlify) has no game server of its own.
+const STATIC_HOSTING = document.querySelector('meta[name="realmwright-hosting"]')?.content === 'static';
+
 function multiSetup(err = '') {
   const o = store.get('multi', { name: 'House Ardent', server: '' });
-  const def = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+  const def = STATIC_HOSTING ? '' : `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   showModal(`<h2>Multiplayer</h2>
     ${err ? `<p class="bad">${esc(err)}</p>` : ''}
+    ${STATIC_HOSTING ? '<p class="small">This copy of the game is hosted without a game server, so single player works here but multiplayer needs a server: run <code>npm start</code> somewhere reachable and enter its address (<code>wss://…/ws</code> from an https page).</p>' : ''}
     <label>Your house <input id="f-name" value="${esc(o.name)}" maxlength="20"></label>
-    <label>Server <input id="f-server" value="${esc(o.server || def)}"></label>
+    <label>Server <input id="f-server" value="${esc(o.server || def)}" placeholder="wss://your-server/ws"></label>
     <label>Room code <input id="f-code" placeholder="e.g. K7Q2M" maxlength="5" style="text-transform:uppercase"></label>
     <p class="small muted">Run your own server with <code>npm start</code> and share its address. The server runs the authoritative simulation.</p>
     <div class="footer"><button class="btn" data-go="title">Back</button><span><button class="btn" data-go="join">Join room</button> <button class="btn primary" data-go="create">Create room</button></span></div>`);
@@ -321,6 +325,7 @@ function connectMulti(action) {
   const server = $('f-server').value;
   const code = ($('f-code').value || '').toUpperCase().trim();
   store.set('multi', { name, server });
+  if (!server) return multiSetup('Enter the address of a game server.');
   if (action === 'join' && !code) return multiSetup('Enter a room code.');
   endSession();
   loading('Connecting…');

@@ -1,0 +1,13 @@
+# Static hosting of the client (single player runs in the browser).
+# Multiplayer needs the Node server (npm start), which Netlify does not run.
+[build]
+  command = "node tools/build-static.mjs"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
