@@ -77,10 +77,9 @@ export function valueNoise(x, y, seed) {
   const fy = y - y0;
   const u = fx * fx * (3 - 2 * fx);
   const v = fy * fy * (3 - 2 * fy);
-  const h = (ix, iy) => hash3(ix, iy, seed) / 4294967296;
-  const a = h(x0, y0);
-  const b = h(x0 + 1, y0);
-  const c = h(x0, y0 + 1);
-  const d = h(x0 + 1, y0 + 1);
+  const a = hash3(x0, y0, seed) / 4294967296;
+  const b = hash3(x0 + 1, y0, seed) / 4294967296;
+  const c = hash3(x0, y0 + 1, seed) / 4294967296;
+  const d = hash3(x0 + 1, y0 + 1, seed) / 4294967296;
   return a + u * (b - a) + v * (c - a) + u * v * (a - b - c + d);
 }

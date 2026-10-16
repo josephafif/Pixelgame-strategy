@@ -11,7 +11,7 @@ export function computeSite(m, s) {
   const { world } = m;
   const W = world.width;
   const H = world.height;
-  const R = (s.hub ? 7 : STAGES[s.stage].radius) + 2;
+  const R = (s.hub ? 12 : STAGES[s.stage].radius) + 1;
   const explored = s.kingdom >= 0 ? m.explored[s.kingdom] : null;
   let land = 0;
   let trees = 0;

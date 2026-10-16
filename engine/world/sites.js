@@ -153,7 +153,7 @@ export function pickStartSites(world, count, avoid = []) {
       const jx = x + rng.int(-2, 2);
       const jy = y + rng.int(-2, 2);
       if (!canFoundAt(world, jx, jy)) continue;
-      if (avoid.some((p) => Math.hypot(p.x - jx, p.y - jy) < 18)) continue;
+      if (avoid.some((p) => Math.hypot(p.x - jx, p.y - jy) < 28)) continue; // free cities spread wide
       const a = analyzeSite(world, jx, jy);
       if (a.buildable < 90) continue; // room for a capital
       if (a.fert < 55) continue; // must be able to feed itself

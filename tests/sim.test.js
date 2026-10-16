@@ -384,3 +384,18 @@ test('the simulation is deterministic', () => {
   };
   assert.equal(play(), play());
 });
+
+test('every suggested start site gives a capital room to grow', () => {
+  for (const seed of [3, 7, 11]) {
+    const m = new Match({ seed, size: 'small', placementTime: 0, players: [{ name: 'P' }] });
+    for (const site of m.startSites.slice(0, 6)) {
+      if (m.placementError(site.x, site.y)) continue;
+      const probe = new Match({ seed, size: 'small', world: m.world, placementTime: 0, players: [{ name: 'P' }] });
+      assert.ok(probe.exec(0, { type: 'place', x: site.x, y: site.y }).ok);
+      const cap = probe.settlement(probe.state.kingdoms[0].capital);
+      assert.ok(cap.houses >= 5, `seed ${seed} site ${site.x},${site.y}: ${cap.houses} houses`);
+      assert.ok(cap.housing >= cap.pop, 'housing for everyone at the start');
+      assert.ok(!cap.full, 'room for more houses');
+    }
+  }
+});

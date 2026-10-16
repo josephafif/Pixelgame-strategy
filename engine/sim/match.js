@@ -305,7 +305,7 @@ export class Match {
     for (const plan of ['farm', 'farm', 'lumber']) {
       if (this.layoutAdd(s, BUILDINGS[plan].plan)) s.buildings[plan] = (s.buildings[plan] || 0) + 1;
     }
-    for (let i = 0; i < 4; i++) this.layoutAdd(s, 'house');
+    for (let i = 0; i < 5; i++) this.layoutAdd(s, 'house');
     s.garrison.inf = 6;
     economy.computeSite(this, s);
     this.recalcHousing(s);
@@ -325,17 +325,18 @@ export class Match {
     const sources = [];
     for (const s of this.state.settlements) {
       const towers = s.buildings.tower || 0;
-      const r = (s.hub ? 7 : STAGES[s.stage].radius) + Math.min(3, towers);
+      const r = (s.hub ? 12 : STAGES[s.stage].radius) + Math.min(3, towers) * 1.5;
       sources.push({ idx: this.idx(s.x, s.y), cost0: 0, tag: s.id, limit: r });
     }
-    const cost = (from, to) => {
+    const cost = (from, to, diag) => {
       const b = biome[to];
       if (b === B.SEA || b === B.DEEP || b === B.LAKE) return Infinity;
       const m = BIOMES[b].move;
-      if (m === Infinity) return 3; // peaks stop growth quickly but don't cut holes
-      return b === B.RIVER ? 2.5 : 0.7 + m * 0.3;
+      const step = diag ? 1.414 : 1;
+      if (m === Infinity) return 3 * step; // peaks stop growth quickly but don't cut holes
+      return (b === B.RIVER ? 2.5 : 0.7 + m * 0.3) * step;
     };
-    this.search.flood({ sources, cost, outDist: dist, outTag: this.owner });
+    this.search.flood({ sources, cost, diag: true, outDist: dist, outTag: this.owner });
     const kingdomOf = new Map(this.state.settlements.map((s) => [s.id, s.kingdom]));
     for (let i = 0; i < this.owner.length; i++) {
       const o = this.owner[i];
@@ -547,7 +548,7 @@ export class Match {
     if (!canFoundAt(this.world, x, y)) return 'Cannot settle on that terrain.';
     for (const s of this.state.settlements) {
       const d = Math.hypot(s.x - x, s.y - y);
-      if (s.hub && d < 18) return 'Too close to a free city.';
+      if (s.hub && d < 26) return 'Too close to a free city.';
       if (!s.hub && d < 20) return 'Too close to another kingdom.';
     }
     const a = analyzeSite(this.world, x, y, { r: 7 });

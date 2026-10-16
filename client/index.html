@@ -1,2 +1,51 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Realmwright</title></head><body></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Realmwright</title>
+<meta name="description" content="Realmwright: a real-time kingdom strategy game where your towns grow on their own into pixel-art cities.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Jacquard+12&family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<canvas id="view" aria-label="Map of the realm"></canvas>
+
+<header id="topbar" hidden>
+  <div id="realm"><span id="realm-crest"></span><span id="realm-name"></span></div>
+  <div id="resources"></div>
+  <div id="clock">
+    <span id="time"></span>
+    <span id="speed" hidden>
+      <button data-speed="0" title="Pause (Space)">II</button>
+      <button data-speed="1" title="Normal speed (1)">1×</button>
+      <button data-speed="2" title="Fast (2)">2×</button>
+      <button data-speed="4" title="Fastest (3)">4×</button>
+    </span>
+    <button id="btn-menu" title="Menu (Esc)">☰</button>
+  </div>
+</header>
+
+<aside id="left" class="panel" hidden></aside>
+<aside id="right" class="panel" hidden>
+  <nav id="tabs">
+    <button data-tab="realm" class="on">Realm</button>
+    <button data-tab="trade">Trade</button>
+    <button data-tab="diplomacy">Diplomacy</button>
+    <button data-tab="chronicle">Chronicle</button>
+  </nav>
+  <div id="tab-body"></div>
+</aside>
+
+<div id="minimap-wrap" hidden><canvas id="minimap" width="240" height="160"></canvas></div>
+<div id="hint" hidden></div>
+<div id="placement" hidden></div>
+<div id="toasts" aria-live="polite"></div>
+<div id="tooltip" hidden></div>
+<div id="modal-back" hidden><div id="modal"></div></div>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>

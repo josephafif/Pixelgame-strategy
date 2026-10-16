@@ -21,8 +21,22 @@ const PUBLIC = ['client', 'engine'];
 export function makeStaticHandler(root) {
   const base = resolve(root);
   return (req, res) => {
-    let url = decodeURIComponent((req.url || '/').split('?')[0]);
-    if (url === '/' || url === '/index.html') url = '/client/index.html';
+    let url;
+    try {
+      url = decodeURIComponent((req.url || '/').split('?')[0]);
+    } catch {
+      res.writeHead(400);
+      res.end();
+      return;
+    }
+    if (url === '/' || url === '/index.html') {
+      // The client uses relative URLs, so it must be served from /client/.
+      const q = (req.url || '').includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      res.writeHead(302, { Location: `/client/${q}` });
+      res.end();
+      return;
+    }
+    if (url.endsWith('/')) url += 'index.html';
     const rel = normalize(url).replace(/^([/\\])+/, '');
     const top = rel.split(/[/\\]/)[0];
     if (!PUBLIC.includes(top)) {

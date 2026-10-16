@@ -62,6 +62,27 @@ export function renderChunk(world, cx, cy, ov) {
   const Y0 = cy * S - M;
   const seed = world.seed | 0;
   const cls = new Uint8Array(SM * SM); // warped biome per pixel
+  // Tiles with a river within one tile need the (costlier) channel test.
+  const TX0 = Math.floor(X0 / TILE) - 1;
+  const TY0 = Math.floor(Y0 / TILE) - 1;
+  const TN = Math.ceil(SM / TILE) + 3;
+  const nearRiver = new Uint8Array(TN * TN);
+  for (let ty = 0; ty < TN; ty++) {
+    for (let tx = 0; tx < TN; tx++) {
+      let hit = 0;
+      for (let dy = -1; dy <= 1 && !hit; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const x = TX0 + tx + dx;
+          const y = TY0 + ty + dy;
+          if (x >= 0 && y >= 0 && x < W && y < H && biome[y * W + x] === B.RIVER) {
+            hit = 1;
+            break;
+          }
+        }
+      }
+      nearRiver[ty * TN + tx] = hit;
+    }
+  }
   for (let py = 0; py < SM; py++) {
     const Y = Y0 + py;
     for (let px = 0; px < SM; px++) {
@@ -82,9 +103,11 @@ export function renderChunk(world, cx, cy, ov) {
       // neighbouring river tiles (diagonal shortcuts round off the bends).
       const ux = Math.floor(X / TILE);
       const uy = Math.floor(Y / TILE);
-      if (b === B.RIVER) b = riverBank(world, ux, uy);
-      const rw = riverWidthAt(world, X + wx * 0.25, Y + wy * 0.25, ux, uy);
-      if (rw) b = B.RIVER;
+      const nr = nearRiver[(uy - TY0) * TN + (ux - TX0)];
+      if (nr) {
+        if (b === B.RIVER) b = riverBank(world, ux, uy);
+        if (riverWidthAt(world, X + wx * 0.25, Y + wy * 0.25, ux, uy)) b = B.RIVER;
+      }
       cls[py * SM + px] = b;
     }
   }
@@ -105,6 +128,46 @@ export function renderChunk(world, cx, cy, ov) {
     return a + (b2 - a) * tx + (c - a) * ty + (a - b2 - c + d) * tx * ty;
   };
   const { mountT, peakT } = world.thresholds;
+  // Relief: slope lighting and height sampled at tile centres, then
+  // interpolated per pixel (cheap, smooth).
+  const GT = CHUNK + 2;
+  const gLit = new Float32Array(GT * GT);
+  const gH = new Float32Array(GT * GT);
+  for (let ty = 0; ty < GT; ty++) {
+    for (let tx = 0; tx < GT; tx++) {
+      const fx = cx * CHUNK + tx - 1;
+      const fy = cy * CHUNK + ty - 1;
+      const gx = hAt(fx + 0.5, fy) - hAt(fx - 0.5, fy);
+      const gy = hAt(fx, fy + 0.5) - hAt(fx, fy - 0.5);
+      gLit[ty * GT + tx] = -(gx * 0.7 + gy * 0.9);
+      gH[ty * GT + tx] = hAt(fx, fy);
+    }
+  }
+  const interp = (arr, X, Y) => {
+    const fx = X / TILE - 0.5 - cx * CHUNK + 1;
+    const fy = Y / TILE - 0.5 - cy * CHUNK + 1;
+    const x0 = Math.max(0, Math.min(GT - 2, Math.floor(fx)));
+    const y0 = Math.max(0, Math.min(GT - 2, Math.floor(fy)));
+    const tx = fx - x0;
+    const ty = fy - y0;
+    const a = arr[y0 * GT + x0];
+    const b2 = arr[y0 * GT + x0 + 1];
+    const c = arr[(y0 + 1) * GT + x0];
+    const d = arr[(y0 + 1) * GT + x0 + 1];
+    return a + (b2 - a) * tx + (c - a) * ty + (a - b2 - c + d) * tx * ty;
+  };
+  // Low-frequency patch noise varies slowly: sample it per 4×4 block.
+  const BN = S >> 2;
+  const lowLand = new Float32Array(BN * BN);
+  const lowWater = new Float32Array(BN * BN);
+  for (let by = 0; by < BN; by++) {
+    for (let bx = 0; bx < BN; bx++) {
+      const X = cx * S + bx * 4 + 2;
+      const Y = cy * S + by * 4 + 2;
+      lowLand[by * BN + bx] = valueNoise(X / 26, Y / 26, seed + 22);
+      lowWater[by * BN + bx] = valueNoise(X / 20, Y / 20, seed + 21);
+    }
+  }
 
   for (let py = 0; py < S; py++) {
     const Y = cy * S + py;
@@ -131,7 +194,7 @@ export function renderChunk(world, cx, cy, ov) {
         if (near === 1) col = r < 0.75 ? FOAM : FOAM2;
         else if (near === 2) col = r < 0.4 ? FOAM2 : pal.light;
         else {
-          const low = valueNoise(X / 20, Y / 20, seed + 21);
+          const low = lowWater[(py >> 2) * BN + (px >> 2)];
           col = low > 0.35 + bay * 0.3 ? pal.base2 : pal.base;
           if (r < 0.03) col = pal.dark;
           // Wave strokes: short light dashes on a staggered lattice.
@@ -139,21 +202,17 @@ export function renderChunk(world, cx, cy, ov) {
           if (wr < 4 && (Y & 3) === 0 && ((X & 7) < 3)) col = pal.wave;
         }
       } else {
-        const low = valueNoise(X / 26, Y / 26, seed + 22);
+        const low = lowLand[(py >> 2) * BN + (px >> 2)];
         col = low > 0.3 + bay * 0.45 ? pal.base2 : pal.base;
         if (r < 0.045) col = pal.dark;
         else if (r < 0.085) col = pal.light;
         // Relief shading on rough ground.
         if (b === B.HILLS || b === B.MOUNTAIN || b === B.PEAK || b === B.SNOW || b === B.TAIGA || b === B.ASH) {
-          const fx = X / TILE - 0.5;
-          const fy = Y / TILE - 0.5;
-          const gx = hAt(fx + 0.5, fy) - hAt(fx - 0.5, fy);
-          const gy = hAt(fx, fy + 0.5) - hAt(fx, fy - 0.5);
           const k = b === B.MOUNTAIN || b === B.PEAK ? 34 : 22;
-          const lit = -(gx * 0.7 + gy * 0.9) * k;
+          const lit = interp(gLit, X, Y) * k;
           if (lit > 0.25 + bay * 0.5) col = pal.light;
           else if (lit < -0.25 - bay * 0.5) col = pal.dark;
-          if (b === B.MOUNTAIN && hAt(fx, fy) > mountT + (peakT - mountT) * 0.65 + (bay - 0.5) * 0.02) col = r < 0.5 ? pal.snow : '#dfe7ef';
+          if (b === B.MOUNTAIN && interp(gH, X, Y) > mountT + (peakT - mountT) * 0.65 + (bay - 0.5) * 0.02) col = r < 0.5 ? pal.snow : '#dfe7ef';
         }
         // Wet edge next to water.
         let wet = false;

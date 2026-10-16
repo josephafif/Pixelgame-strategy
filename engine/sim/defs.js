@@ -58,11 +58,11 @@ export const HOUSE = {
 };
 
 export const STAGES = [
-  { name: 'Outpost', radius: 5, baseHousing: 8, maxBuild: 4, maxHouses: 3 },
-  { name: 'Hamlet', radius: 7, baseHousing: 10, maxBuild: 10, maxHouses: 9, up: { pop: 18, cost: { wood: 40 }, work: 30 } },
-  { name: 'Village', radius: 9, baseHousing: 12, maxBuild: 13, maxHouses: 20, up: { pop: 40, cost: { wood: 70, stone: 20 }, work: 45 } },
-  { name: 'Town', radius: 11, baseHousing: 16, maxBuild: 19, maxHouses: 38, up: { pop: 100, cost: { wood: 120, stone: 80, goods: 15 }, work: 70, needs: ['market', 'hall'] } },
-  { name: 'City', radius: 13, baseHousing: 20, maxBuild: 28, maxHouses: 70, up: { pop: 220, cost: { stone: 200, goods: 50, iron: 20, crystal: 6 }, work: 110, needs: ['temple'], connected: true } },
+  { name: 'Outpost', radius: 7, baseHousing: 8, maxBuild: 4, maxHouses: 3 },
+  { name: 'Hamlet', radius: 10, baseHousing: 10, maxBuild: 10, maxHouses: 9, up: { pop: 18, cost: { wood: 40 }, work: 30 } },
+  { name: 'Village', radius: 13, baseHousing: 12, maxBuild: 13, maxHouses: 20, up: { pop: 40, cost: { wood: 70, stone: 20 }, work: 45 } },
+  { name: 'Town', radius: 16, baseHousing: 16, maxBuild: 19, maxHouses: 38, up: { pop: 100, cost: { wood: 120, stone: 80, goods: 15 }, work: 70, needs: ['market', 'hall'] } },
+  { name: 'City', radius: 20, baseHousing: 20, maxBuild: 28, maxHouses: 70, up: { pop: 220, cost: { stone: 200, goods: 50, iron: 20, crystal: 6 }, work: 110, needs: ['temple'], connected: true } },
 ];
 
 export const WALLS = [

@@ -137,7 +137,7 @@ test('the server serves the client but not server code', async () => {
   const port = await srv.listen(0, '127.0.0.1');
   try {
     const page = await fetch(`http://127.0.0.1:${port}/`);
-    assert.equal(page.status, 200);
+    assert.equal(page.status, 200, 'root redirects to the client');
     assert.match(await page.text(), /<html/i);
     const eng = await fetch(`http://127.0.0.1:${port}/engine/sim/defs.js`);
     assert.equal(eng.status, 200);
