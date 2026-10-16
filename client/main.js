@@ -217,6 +217,7 @@ function endSession() {
   cancelAnimationFrame(session.raf);
   clearInterval(session.autosave);
   session.ui?.destroy();
+  session.renderer?.destroy();
   session.transport.close();
   for (const id of ['topbar', 'left', 'right', 'minimap-wrap', 'hint', 'placement', 'dock']) $(id).hidden = true;
   $('toasts').innerHTML = '';

@@ -4,6 +4,7 @@
 
 import { renderChunk, CHUNK, TILE } from './ground.js';
 import { renderSettlementLayer } from './settlement-layer.js';
+import { PaintPool } from './paint-pool.js';
 import { layoutBounds } from '../../engine/settlement/planner.js';
 import { buildTerrainOverview, buildTerritory, buildFog, DEPOSIT_COLORS } from './overview.js';
 import { soldierSprite, wagonSprite, boatSprite } from './decor.js';
@@ -12,7 +13,8 @@ import { D } from '../../engine/world/biomes.js';
 
 export const ZOOMS = [2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64];
 const DETAIL = 8; // pixels per tile at which the pixel-art view takes over
-const MAX_CHUNKS = 110;
+// Cached chunks are 512×512 bitmaps (1 MB each): phones keep fewer.
+const MAX_CHUNKS = typeof window !== 'undefined' && Math.min(window.innerWidth, window.innerHeight) < 600 ? 48 : 96;
 
 const depositCache = new Map();
 function depositSprite(type) {
@@ -66,7 +68,62 @@ export class Renderer {
     this.preview = null; // { x, y, ok, radius, text }
     this.frameNo = 0;
     this.pendingQueue = [];
+    // Pixel painting happens in workers; the frame only draws finished bitmaps.
+    this.pool = new PaintPool(cw.world, (r) => this.painted(r));
     this.resize();
+  }
+
+  /** A worker finished a chunk or settlement layer. */
+  painted(r) {
+    if (r.key.startsWith('c')) {
+      const old = this.chunks.get(r.key.slice(1));
+      if (old?.canvas?.close) old.canvas.close();
+      this.chunks.set(r.key.slice(1), { canvas: r.bmp, used: this.frameNo });
+      this.evictChunks();
+    } else {
+      const sid = Number(r.key.slice(1));
+      const L = this.cw.layouts.get(sid);
+      const old = this.layers.get(sid);
+      if (old?.canvas?.close) old.canvas.close();
+      if (!L) return;
+      this.layers.set(sid, { canvas: r.bmp, px: r.px, py: r.py, v: r.v, color: r.color, bounds: layoutBounds(L) });
+    }
+  }
+
+  evictChunks() {
+    while (this.chunks.size > MAX_CHUNKS) {
+      let old = null;
+      for (const [k, v] of this.chunks) if (!old || v.used < old[1].used) old = [k, v];
+      if (!old) break;
+      if (old[1].canvas.close) old[1].canvas.close();
+      this.chunks.delete(old[0]);
+    }
+  }
+
+  /** The overlay data a worker needs to paint chunk (cx, cy), with a margin. */
+  chunkJob(cx, cy) {
+    const { cw } = this;
+    const W = cw.W;
+    const x0 = Math.max(0, cx * CHUNK - 2);
+    const y0 = Math.max(0, cy * CHUNK - 2);
+    const x1 = Math.min(W, (cx + 1) * CHUNK + 2);
+    const y1 = Math.min(cw.H, (cy + 1) * CHUNK + 2);
+    const w = x1 - x0;
+    const h = y1 - y0;
+    const patch = { x0, y0, w, h };
+    const transfer = [];
+    for (const k of ['road', 'ground', 'crop', 'cleared']) {
+      const out = new Uint8Array(w * h);
+      const src = cw.ov[k];
+      for (let y = 0; y < h; y++) out.set(src.subarray((y0 + y) * W + x0, (y0 + y) * W + x1), y * w);
+      patch[k] = out;
+      transfer.push(out.buffer);
+    }
+    return { msg: { t: 'chunk', cx, cy, patch }, transfer };
+  }
+
+  destroy() {
+    this.pool.destroy();
   }
 
   resize() {
@@ -122,10 +179,21 @@ export class Renderer {
 
   // Caches ------------------------------------------------------------------
 
-  chunk(cx, cy, allowBuild) {
+  chunk(cx, cy, allowBuild, prio = 0) {
     const key = `${cx},${cy}`;
     let c = this.chunks.get(key);
     const dirty = this.cw.dirtyChunks.has(key);
+    if (this.pool.ok) {
+      // Ask a worker; meanwhile the old picture (or a placeholder) is shown.
+      if ((!c || dirty) && !this.pool.busy(`c${key}`)) {
+        this.pool.want(`c${key}`, prio, () => {
+          this.cw.dirtyChunks.delete(key);
+          return this.chunkJob(cx, cy);
+        });
+      }
+      if (c) c.used = this.frameNo;
+      return c;
+    }
     if ((!c || dirty) && allowBuild) {
       const canvas = renderChunk(this.cw.world, cx, cy, this.cw.ov);
       c = { canvas, used: this.frameNo };
@@ -146,7 +214,18 @@ export class Renderer {
     if (!L) return null;
     const color = this.cw.colorOf(s.kingdom);
     let ly = this.layers.get(s.id);
-    if (!ly || ly.v !== L.v || ly.color !== color || this.cw.layerDirty.has(s.id)) {
+    const stale = !ly || ly.v !== L.v || ly.color !== color || this.cw.layerDirty.has(s.id);
+    if (stale && this.pool.ok) {
+      if (!this.pool.busy(`s${s.id}`)) {
+        const d = Math.hypot(s.x - this.cam.x, s.y - this.cam.y) / CHUNK;
+        this.pool.want(`s${s.id}`, d - 0.5, () => {
+          this.cw.layerDirty.delete(s.id);
+          return { msg: { t: 'layer', L, color, v: L.v } };
+        });
+      }
+      return ly || null;
+    }
+    if (stale) {
       if (this.layerBudget <= 0 && ly) return ly;
       this.layerBudget--;
       const r = renderSettlementLayer(this.cw.world, L, { color });
@@ -162,6 +241,7 @@ export class Renderer {
   frame(now) {
     this.frameNo++;
     this.now = now;
+    this.pool.begin();
     const { ctx, cw } = this;
     const dpr = this.dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -170,6 +250,7 @@ export class Renderer {
     if (cw.territoryDirty || !this.terr) {
       this.terr = buildTerritory(cw);
       cw.territoryDirty = false;
+      this.terrStamp = (this.terrStamp || 0) + 1;
     }
     if (cw.fogDirty || !this.fog) {
       this.fog = buildFog(cw);
@@ -195,6 +276,7 @@ export class Renderer {
     }
     this.drawLabels(ox, oy, ppt);
     this.drawPreview(ox, oy, ppt);
+    this.pool.pump();
   }
 
   drawStrategic(ox, oy, ppt) {
@@ -252,7 +334,8 @@ export class Renderer {
     const { ctx, cw } = this;
     const scale = ppt / TILE;
     ctx.imageSmoothingEnabled = scale < 1;
-    ctx.imageSmoothingQuality = 'high';
+    // Downscaled chunks (zoomed out) only need a cheap filter; 'high' costs a lot per frame.
+    ctx.imageSmoothingQuality = 'low';
     const { x0, y0, x1, y1 } = this.view;
     const cx0 = Math.max(0, Math.floor(x0 / CHUNK));
     const cy0 = Math.max(0, Math.floor(y0 / CHUNK));
@@ -271,7 +354,7 @@ export class Renderer {
       const allow = built === 0 || performance.now() - t0 < 14;
       const had = this.chunks.has(`${cx},${cy}`);
       const wasDirty = cw.dirtyChunks.has(`${cx},${cy}`);
-      const c = this.chunk(cx, cy, allow);
+      const c = this.chunk(cx, cy, allow, Math.hypot(cx + 0.5 - mcx, cy + 0.5 - mcy));
       if ((!had || wasDirty) && c && allow) built++;
       const dx = Math.round(ox + cx * size);
       const dy = Math.round(oy + cy * size);
@@ -284,6 +367,17 @@ export class Renderer {
       }
     }
     this.chunksPending = order.some(([cx, cy]) => !this.chunks.has(`${cx},${cy}`) || cw.dirtyChunks.has(`${cx},${cy}`));
+    // Workers paint one ring beyond the view in advance, so panning finds it ready.
+    if (this.pool.ok) {
+      const nx = Math.ceil(cw.W / CHUNK);
+      const ny = Math.ceil(cw.H / CHUNK);
+      for (let cy = cy0 - 1; cy <= cy1 + 1; cy++) {
+        for (let cx = cx0 - 1; cx <= cx1 + 1; cx++) {
+          if (cx < 0 || cy < 0 || cx >= nx || cy >= ny || (cx >= cx0 && cx <= cx1 && cy >= cy0 && cy <= cy1)) continue;
+          if (!this.chunks.has(`${cx},${cy}`)) this.chunk(cx, cy, false, 50 + Math.hypot(cx + 0.5 - mcx, cy + 0.5 - mcy));
+        }
+      }
+    }
     // Deposits the kingdom knows about.
     const dep = cw.world.deposit;
     for (let y = Math.max(0, y0); y < Math.min(cw.H, y1); y++) {
@@ -313,42 +407,56 @@ export class Renderer {
     }
   }
 
-  drawBorders(ox, oy, ppt) {
-    const { ctx, cw } = this;
-    const { x0, y0, x1, y1 } = this.view;
+  /**
+   * Territory borders as one cached path per kingdom colour, in tile units,
+   * rebuilt only when territory or zoom changes: a handful of fills per frame.
+   */
+  borderPaths(ppt) {
+    const { cw } = this;
+    const key = `${cw.snap?.territoryV ?? 0}:${this.terrStamp}:${ppt}`;
+    if (this.borders?.key === key) return this.borders.paths;
     const K = cw.ownerK;
     const W = cw.W;
     const lw = Math.max(1, Math.round(ppt / 20));
-    ctx.globalAlpha = 0.85;
-    for (let y = Math.max(0, y0); y < Math.min(cw.H - 1, y1); y++) {
-      for (let x = Math.max(0, x0); x < Math.min(W - 1, x1); x++) {
+    const t = (lw * 2) / ppt; // stroke width in tiles
+    const paths = new Map();
+    const path = (k) => {
+      const c = cw.colorOf(k);
+      if (!paths.has(c)) paths.set(c, new Path2D());
+      return paths.get(c);
+    };
+    for (let y = 0; y < cw.H - 1; y++) {
+      for (let x = 0; x < W - 1; x++) {
         const i = y * W + x;
         const k = K[i];
         const kr = K[i + 1];
         const kd = K[i + W];
         if (k !== kr) {
-          if (k >= 0 || k === -2) {
-            ctx.fillStyle = cw.colorOf(k);
-            ctx.fillRect(ox + (x + 1) * ppt - lw * 2, oy + y * ppt, lw * 2, ppt);
-          }
-          if (kr >= 0 || kr === -2) {
-            ctx.fillStyle = cw.colorOf(kr);
-            ctx.fillRect(ox + (x + 1) * ppt, oy + y * ppt, lw * 2, ppt);
-          }
+          if (k >= 0 || k === -2) path(k).rect(x + 1 - t, y, t, 1);
+          if (kr >= 0 || kr === -2) path(kr).rect(x + 1, y, t, 1);
         }
         if (k !== kd) {
-          if (k >= 0 || k === -2) {
-            ctx.fillStyle = cw.colorOf(k);
-            ctx.fillRect(ox + x * ppt, oy + (y + 1) * ppt - lw * 2, ppt, lw * 2);
-          }
-          if (kd >= 0 || kd === -2) {
-            ctx.fillStyle = cw.colorOf(kd);
-            ctx.fillRect(ox + x * ppt, oy + (y + 1) * ppt, ppt, lw * 2);
-          }
+          if (k >= 0 || k === -2) path(k).rect(x, y + 1 - t, 1, t);
+          if (kd >= 0 || kd === -2) path(kd).rect(x, y + 1, 1, t);
         }
       }
     }
-    ctx.globalAlpha = 1;
+    this.borders = { key, paths };
+    return paths;
+  }
+
+  drawBorders(ox, oy, ppt) {
+    const { ctx } = this;
+    const paths = this.borderPaths(ppt);
+    const dpr = this.dpr;
+    ctx.save();
+    ctx.setTransform(dpr * ppt, 0, 0, dpr * ppt, dpr * ox, dpr * oy);
+    ctx.globalAlpha = 0.85;
+    for (const [color, path] of paths) {
+      ctx.fillStyle = color;
+      ctx.fill(path);
+    }
+    ctx.restore();
   }
 
   /** Interpolated position of a moving entity between the last two snapshots. */
