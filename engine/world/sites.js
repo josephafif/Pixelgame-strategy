@@ -132,7 +132,7 @@ export function pickTradeHubs(world, count) {
     }
   }
   cands.sort((p, q) => q.score - p.score);
-  const minD = Math.min(W, H) * 0.42;
+  const minD = Math.min(W, H) * (count > 3 ? 0.36 : 0.42);
   const hubs = [];
   for (const c of cands) {
     if (hubs.length >= count) break;

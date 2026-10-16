@@ -857,6 +857,9 @@ export function addBuilding(world, L, kind, { state = 'built' } = {}) {
   const ctx = ctxOf(world, L);
   const k = KINDS[kind];
   if (!k) throw new Error(`unknown building kind ${kind}`);
+  // A kind that found no room cannot find room until the layout changes.
+  ctx.failed ||= {};
+  if (ctx.failed[kind] === L.v) return null;
   const rnd = rngFor(L, KIND_KEYS.indexOf(kind));
   const [w, h] = footprintFor(L, kind, rnd);
   const res = L.reserved.find((r) => r.kind === kind);
@@ -903,6 +906,7 @@ export function addBuilding(world, L, kind, { state = 'built' } = {}) {
     if (!growDistrict(world, L, kind, rnd) && !chosen && attempt >= 1) break;
   }
   repairLayout(world, L);
+  ctx.failed[kind] = L.v;
   return null;
 }
 
@@ -1102,7 +1106,25 @@ function growDistrict(world, L, kind, rnd) {
   const cls = rural && kind !== 'house' ? ROAD.PATH : ROAD.STREET;
   const baseR = k.house ? compactRadius(L) + 1.5 : Math.max(compactRadius(L) + 3, k.ring[1]);
   const steps = stepsFromNet(ctx, L);
-  const cands = [];
+  // Summed-area table of free, suitable cells: O(1) neighbourhood counts.
+  const S1 = N + 1;
+  const sat = new Int32Array(S1 * S1);
+  for (let y = 0; y < N; y++) {
+    let row = 0;
+    for (let x = 0; x < N; x++) {
+      const l = y * N + x;
+      if (inner(x, y) && L.occ[l] === O.FREE && terrainOk(ctx, kind, ctx.tbase[l])) row++;
+      sat[(y + 1) * S1 + x + 1] = sat[y * S1 + x + 1] + row;
+    }
+  }
+  const box = (x0, y0, x1, y1) => {
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(N - 1, x1);
+    y1 = Math.min(N - 1, y1);
+    return sat[(y1 + 1) * S1 + x1 + 1] - sat[y0 * S1 + x1 + 1] - sat[(y1 + 1) * S1 + x0] + sat[y0 * S1 + x0];
+  };
+  let cands = [];
   for (let y = 2; y < N - 2; y++) {
     for (let x = 2; x < N - 2; x++) {
       const l = y * N + x;
@@ -1113,21 +1135,19 @@ function growDistrict(world, L, kind, rnd) {
       if (dist < 3 || dist > R - 3) continue;
       const near = steps[l];
       if (near < 2 || near > (rural ? 22 : 12)) continue;
-      let free = 0;
-      for (let dy = -3; dy <= 3; dy++) {
-        for (let dx = -3; dx <= 3; dx++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (inner(nx, ny) && L.occ[ny * N + nx] === O.FREE && terrainOk(ctx, kind, ctx.tbase[ny * N + nx])) free++;
-        }
-      }
+      const free = box(x - 3, y - 3, x + 3, y + 3);
       if (free < 12) continue;
       let s = free * 0.12 - Math.abs(dist - baseR) * 0.7 - Math.max(0, near - 4) * 0.5;
-      if (k.near) s += nearScore(ctx, L, kind, x - 1, y - 1, 3, 3);
       for (const dn of L.districts) s -= Math.max(0, 6 - Math.hypot(dn.x - x, dn.y - y)) * 0.6;
       s += (hash3(L.seed, l, L.ops) / 4294967296) * 1.2;
       cands.push({ l, s, x, y });
     }
+  }
+  // Terrain preference is costlier: only score the most promising cells.
+  if (k.near) {
+    cands.sort((p, q) => q.s - p.s || p.l - q.l);
+    cands = cands.slice(0, 60);
+    for (const c of cands) c.s += nearScore(ctx, L, kind, c.x - 1, c.y - 1, 3, 3);
   }
   cands.sort((p, q) => q.s - p.s || p.l - q.l);
   for (const c of cands.slice(0, 8)) {
@@ -1171,7 +1191,10 @@ function growDistrict(world, L, kind, rnd) {
     const own = new Set([...newCells, ...stub]);
     const loop = route(ctx, L, [endL], (l) => isNet(L, l) && !own.has(l) && distC(L, l) > 1, -1, { cls, maxNodes: 2500 });
     if (loop && loop.length <= 11 && loop.length > 2) layRoad(L, loop.slice(1, -1).filter((l) => !isNet(L, l)), cls);
-    L.districts.push({ x: c.x, y: c.y });
+    if (!L.districts.some((d) => Math.abs(d.x - c.x) + Math.abs(d.y - c.y) < 4)) {
+      L.districts.push({ x: c.x, y: c.y });
+      if (L.districts.length > 40) L.districts.shift();
+    }
     L.v++;
     return true;
   }
