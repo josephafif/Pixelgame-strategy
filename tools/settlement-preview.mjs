@@ -3,30 +3,10 @@
 // Usage: node tools/settlement-preview.mjs seed siteIndex houses stage out.png
 import { generateWorld, WORLD_SIZES } from '../engine/world/worldgen.js';
 import { pickStartSites, pickTradeHubs } from '../engine/world/sites.js';
-import { createLayout, addBuilding, applyStage, buildWalls, N, O } from '../engine/settlement/planner.js';
-import { validateLayout } from '../engine/settlement/validate.js';
+import { N, O } from '../engine/settlement/planner.js';
+import { growDemo } from '../engine/settlement/demo.js';
 import { BIOMES } from '../engine/world/biomes.js';
 import { writePng } from './png.mjs';
-
-export function growDemo(world, site, { houses = 40, stage = 3, walls = 0, kind = 'capital', extras = null }) {
-  const L = createLayout(world, { cx: site.x, cy: site.y, seed: world.seed, kind });
-  const plan = extras || ['farm', 'lumber', 'farm', 'market', 'quarry', 'farm', 'smithy', 'granary', 'workshop', 'temple', 'barracks', 'harbor', 'tavern', 'farm', 'herbalist', 'mine', 'fishery', 'farm'];
-  let st = kind === 'outpost' ? 0 : 1;
-  applyStage(world, L, st);
-  const failures = [];
-  for (let i = 0; i < houses; i++) {
-    const want = Math.min(stage, i < 8 ? 1 : i < 20 ? 2 : i < 45 ? 3 : 4);
-    if (want > L.stage) applyStage(world, L, want);
-    if (!addBuilding(world, L, 'house')) failures.push('house');
-    if (i % 3 === 1 && plan.length) {
-      const k = plan.shift();
-      if (!addBuilding(world, L, k)) failures.push(k);
-    }
-  }
-  if (stage > L.stage) applyStage(world, L, stage);
-  if (walls) buildWalls(world, L, walls);
-  return { L, failures, check: validateLayout(world, L) };
-}
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const seed = Number(process.argv[2] ?? 1);
@@ -39,7 +19,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const sites = pickStartSites(world, 10, hubs);
   const site = sites[siteIdx];
   const t0 = performance.now();
-  const { L, failures, check } = growDemo(world, site, { houses, stage, walls: stage >= 3 ? 2 : 0 });
+  const { L, failures, check } = growDemo(world, site, { houses, stage, walls: stage >= 3 ? 2 : 0, validate: true });
   console.log(`${site.title} style=${L.style} buildings=${L.buildings.length} fields=${L.fields.length} in ${(performance.now() - t0).toFixed(0)}ms failures=${failures.join(',')}`);
   console.log('valid', check.ok, check.errors.slice(0, 10));
   const S = 8;

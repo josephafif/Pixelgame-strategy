@@ -322,6 +322,31 @@ export function generateWorld({ seed = 1, width = 448, height = 304, landFractio
       biome[i] = b;
     }
   }
+  // Thin lake slivers (one-cell fingers along a river) read badly; fold them
+  // into the river or the surrounding land.
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < N; i++) {
+      if (biome[i] !== B.LAKE) continue;
+      const x = i % W;
+      const y = (i / W) | 0;
+      let lakeN = 0;
+      let riverN = false;
+      for (let d = 0; d < 4; d++) {
+        const nx = x + DX4[d];
+        const ny = y + DY4[d];
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const nb = biome[ny * W + nx];
+        if (nb === B.LAKE) lakeN++;
+        if (nb === B.RIVER || nb === B.SEA || nb === B.DEEP) riverN = true;
+      }
+      if (lakeN <= 1) {
+        biome[i] = riverN ? B.RIVER : B.GRASS;
+        lake[i] = 0;
+        if (riverN) river[i] = Math.max(1, river[i]);
+      }
+    }
+  }
+
   // Fertile river valleys and oases.
   for (let i = 0; i < N; i++) {
     const b = biome[i];
@@ -365,7 +390,7 @@ export function generateWorld({ seed = 1, width = 448, height = 304, landFractio
         }
         case B.TAIGA: {
           const dens = clear < -0.3 ? 0.06 : 0.66;
-          if (r < dens) f = temp[i] < 0.27 ? F.SNOWPINE : F.PINE;
+          if (r < dens) f = F.PINE;
           else if (r < dens + 0.04) f = F.ROCK;
           break;
         }
