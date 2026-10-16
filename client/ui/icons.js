@@ -87,6 +87,39 @@ const PAINT = {
     p.rect(3, 8, 10, 6, '#e9ddc0');
     p.rect(7, 10, 3, 4, '#6a4527');
   },
+  crown(p) {
+    p.rect(3, 8, 11, 4, '#e8b840');
+    p.hline(3, 13, 12, '#b8862a');
+    for (const x of [3, 8, 13]) p.vline(x, 4, 8, '#e8b840');
+    for (const x of [5, 11]) p.vline(x, 6, 8, '#e8b840');
+    p.set(8, 3, '#ffe28a');
+    p.set(6, 10, '#c4483a');
+    p.set(10, 10, '#3a68c8');
+  },
+  scales(p) {
+    p.vline(8, 3, 13, '#8f6a3e');
+    p.hline(5, 11, 13, '#6f5030');
+    p.hline(2, 14, 4, '#c9a04a');
+    p.line(3, 5, 2, 9, '#c9a04a');
+    p.line(13, 5, 14, 9, '#c9a04a');
+    p.hline(1, 5, 9, '#e8b840');
+    p.hline(11, 15, 9, '#e8b840');
+  },
+  banner(p) {
+    p.vline(3, 2, 14, '#8f6a3e');
+    p.rect(4, 3, 9, 6, '#c4483a');
+    p.hline(4, 12, 3, '#e06a5a');
+    p.set(12, 9, '#c4483a');
+    p.set(10, 9, '#c4483a');
+    p.rect(7, 5, 2, 2, '#f0d48a');
+  },
+  scroll(p) {
+    p.rect(4, 3, 9, 10, '#efe3c2');
+    p.vline(3, 3, 13, '#d3bf8f');
+    p.hline(3, 13, 3, '#c9a04a');
+    p.hline(3, 13, 13, '#c9a04a');
+    for (const y of [6, 8, 10]) p.hline(6, 11, y, '#8a7556');
+  },
 };
 
 export function icon(name) {

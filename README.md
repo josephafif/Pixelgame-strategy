@@ -60,6 +60,16 @@ Open <http://localhost:8080> in a browser.
 H to jump to your capital, Space to pause (single player), 1/2/3 to set speed, Esc to cancel or open the
 menu.
 
+**On phones and tablets** the layout changes:
+
+- A bar at the bottom opens Town, Realm, Trade, Diplomacy and Chronicle. In landscape it becomes a rail
+  on the left.
+- One sheet is open at a time, so the map stays visible. Drag the sheet's handle up to expand it, or
+  down to close it.
+- Drag to pan, pinch or double-tap to zoom, tap to select, and long-press the map to march the selected
+  army.
+- Orders on the map (settlers, scouts, roads, marches) show the spot first and wait for you to confirm.
+
 ## Development
 
 ```sh
@@ -73,6 +83,7 @@ npm run preview:settlement -- 1 0 40 3 out.png   # grow a settlement at a start 
 node tools/play.mjs shots 7 small 60       # drive the real client in headless Chromium
 node tools/save-check.mjs shots            # browser test: save, reload, continue
 node tools/mp-browser.mjs shots            # two browsers in one multiplayer room
+node tools/mobile-shots.mjs shots all       # every menu and panel: phone portrait, landscape, desktop
 node tools/shoot.mjs "/client/debug/sprites.html?scale=3" out.png 1200 900   # screenshot any page
 ```
 

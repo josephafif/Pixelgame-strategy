@@ -70,7 +70,8 @@ export class Renderer {
   }
 
   resize() {
-    const dpr = window.devicePixelRatio || 1;
+    // Pixel art gains nothing above 2x, and phones at 3x pay for it in frame time.
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
     this.dpr = dpr;
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;

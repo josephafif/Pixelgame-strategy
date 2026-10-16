@@ -171,6 +171,7 @@ function helpScreen() {
     <p><b>War</b> opens borders. Armies need supply near your land; hills, forests and rivers favour defenders; walls must be battered down, ideally with siege engines, before a town can be taken.</p>
     <p><b>Win</b> by conquest, by holding two thirds of all towns and 60% of all people for 4 minutes, by building the Grand Exchange and holding it for 3 minutes, or by score when time runs out.</p>
     <p><b>Controls:</b> drag to pan (or WASD), wheel to zoom, click to select, right-click to march an army, H for your capital, Space to pause, 1/2/3 for speed, Esc to cancel.</p>
+    <p><b>On a phone or tablet:</b> drag to pan, pinch or double-tap to zoom, tap to select. Long-press the map to march a selected army. Map orders (settlers, scouts, roads, marches) show the spot first and wait for you to confirm. The bar at the bottom opens your town, realm, trade, diplomacy and chronicle.</p>
     </div><div class="footer"><span></span><button class="btn" data-go="title">Back</button></div>`);
 }
 
@@ -217,7 +218,7 @@ function endSession() {
   clearInterval(session.autosave);
   session.ui?.destroy();
   session.transport.close();
-  for (const id of ['topbar', 'left', 'right', 'minimap-wrap', 'hint', 'placement']) $(id).hidden = true;
+  for (const id of ['topbar', 'left', 'right', 'minimap-wrap', 'hint', 'placement', 'dock']) $(id).hidden = true;
   $('toasts').innerHTML = '';
   session = null;
 }

@@ -2,7 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#24170e">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Realmwright</title>
 <meta name="description" content="Realmwright: a real-time kingdom strategy game where your towns grow on their own into pixel-art cities.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -30,6 +34,7 @@
 
 <aside id="left" class="panel" hidden></aside>
 <aside id="right" class="panel" hidden>
+  <div class="sheet-head" data-grip><span class="grip" aria-hidden="true"></span><h2 id="right-title">Realm</h2><button class="close" data-sheet-close title="Close">✕</button></div>
   <nav id="tabs">
     <button data-tab="realm" class="on">Realm</button>
     <button data-tab="trade">Trade</button>
@@ -39,6 +44,7 @@
   <div id="tab-body"></div>
 </aside>
 
+<nav id="dock" hidden aria-label="Realm"></nav>
 <div id="minimap-wrap" hidden><canvas id="minimap" width="240" height="160"></canvas></div>
 <div id="hint" hidden></div>
 <div id="placement" hidden></div>
