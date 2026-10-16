@@ -4,10 +4,10 @@
 // Usage: node tools/build-static.mjs [outDir]
 import { cpSync, rmSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const out = join(root, process.argv[2] || 'dist');
+const out = resolve(root, process.argv[2] || 'dist');
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out, { recursive: true });
 for (const dir of ['client', 'engine']) cpSync(join(root, dir), join(out, dir), { recursive: true });
