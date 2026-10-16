@@ -118,7 +118,8 @@ export class Match {
   }
 
   event(kid, kind, text, x = null, y = null) {
-    this.state.events.push({ t: this.state.t, kid, kind, text, x, y });
+    this.state.eventSeq = (this.state.eventSeq || 0) + 1;
+    this.state.events.push({ seq: this.state.eventSeq, t: this.state.t, kid, kind, text, x, y });
     if (this.state.events.length > 400) this.state.events.splice(0, this.state.events.length - 300);
   }
 
