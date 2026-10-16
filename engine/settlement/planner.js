@@ -218,21 +218,50 @@ export function markBlocked(L, blocked, world) {
 export function syncWorldRoads(world, L, worldRoads) {
   const W = world.width;
   let changed = false;
-  for (let ly = 0; ly < N; ly++) {
-    for (let lx = 0; lx < N; lx++) {
-      const wx = L.ox + lx;
-      const wy = L.oy + ly;
-      if (wx < 0 || wy < 0 || wx >= W || wy >= world.height) continue;
-      if (!worldRoads[wy * W + wx]) continue;
-      const l = ly * N + lx;
-      const o = L.occ[l];
-      if (o === O.FREE || o === O.APRON) {
-        L.occ[l] = O.ROAD;
-        if (!L.road[l] || L.road[l] > ROAD.MAIN) L.road[l] = ROAD.MAIN;
-        changed = true;
-      } else if (o === O.ROAD && L.road[l] !== ROAD.MAIN) {
-        L.road[l] = ROAD.MAIN;
-        changed = true;
+  const isWorldRoad = (lx, ly) => {
+    const wx = L.ox + lx;
+    const wy = L.oy + ly;
+    return wx >= 0 && wy >= 0 && wx < W && wy < world.height && worldRoads[wy * W + wx] > 0;
+  };
+  const take = (l) => {
+    const o = L.occ[l];
+    if (o === O.FREE || o === O.APRON) {
+      L.occ[l] = O.ROAD;
+      if (!L.road[l] || L.road[l] > ROAD.MAIN) L.road[l] = ROAD.MAIN;
+      return true;
+    }
+    if (o === O.ROAD && L.road[l] !== ROAD.MAIN) {
+      L.road[l] = ROAD.MAIN;
+      changed = true;
+    }
+    return false;
+  };
+  if (!L.plaza) {
+    // A new layout plans its streets around the roads already there.
+    for (let ly = 0; ly < N; ly++) for (let lx = 0; lx < N; lx++) if (isWorldRoad(lx, ly) && take(ly * N + lx)) changed = true;
+  } else {
+    // Later, a kingdom road becomes a street only where it joins the street
+    // network, so no stretch of road inside the town leads nowhere.
+    const q = [];
+    for (let l = 0; l < N * N; l++) {
+      if (!isNet(L, l)) continue;
+      q.push(l);
+      if (L.road[l] && isWorldRoad(l % N, (l / N) | 0)) take(l);
+    }
+    while (q.length) {
+      const c = q.pop();
+      const x = c % N;
+      const y = (c / N) | 0;
+      for (let k = 0; k < 4; k++) {
+        const nx = x + DX[k];
+        const ny = y + DY[k];
+        if (!inner(nx, ny)) continue;
+        const nl = ny * N + nx;
+        if (isNet(L, nl) || !isWorldRoad(nx, ny)) continue;
+        if (take(nl)) {
+          changed = true;
+          q.push(nl);
+        }
       }
     }
   }
@@ -871,8 +900,9 @@ export function addBuilding(world, L, kind, { state = 'built' } = {}) {
   const k = KINDS[kind];
   if (!k) throw new Error(`unknown building kind ${kind}`);
   // A kind that found no room cannot find room until the layout changes.
-  ctx.failed ||= {};
-  if (ctx.failed[kind] === L.v) return null;
+  // The memo lives on the layout itself so that saved games replay exactly.
+  L.failed ||= {};
+  if (L.failed[kind] === L.v) return null;
   const rnd = rngFor(L, KIND_KEYS.indexOf(kind));
   const [w, h] = footprintFor(L, kind, rnd);
   const res = L.reserved.find((r) => r.kind === kind);
@@ -922,7 +952,7 @@ export function addBuilding(world, L, kind, { state = 'built' } = {}) {
     if (!g && !chosen && attempt >= 1) break;
   }
   repairLayout(world, L);
-  if (!grew) ctx.failed[kind] = L.v;
+  if (!grew) L.failed[kind] = L.v;
   return null;
 }
 

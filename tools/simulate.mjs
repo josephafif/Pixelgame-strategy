@@ -32,4 +32,5 @@ for (const e of evs.slice(-40)) console.log(`  [${Math.round(e.t)}] ${e.kid >= 0
 console.log('settlements:', m.state.settlements.filter((s) => !s.hub).map((s) => `${s.name}(${s.kingdom}) st${s.stage} pop${Math.round(s.pop)}/${s.housing} b:${Object.entries(s.buildings).map(([k, v]) => k + v).join(',')}`).join('\n  '));
 console.log('market:', JSON.stringify(m.state.market.price));
 for (const k of m.state.kingdoms) console.log(`  ${k.name}: trades ${k.stats.trades || 0} (sold ${Math.round(k.stats.sold || 0)}, bought ${Math.round(k.stats.bought || 0)}), deals ${k.stats.deals || 0}, roads ${m.state.roadJobs.filter((r) => r.kid === k.id).length} building, orders ${k.orders.map((o) => o.side + ' ' + o.res).join(', ')}, stock ${JSON.stringify(Object.fromEntries(Object.entries(k.stock).map(([a, b]) => [a, Math.round(b)])))}`);
+console.log('tally:', JSON.stringify(m.state.tally || {}));
 console.log('winner:', JSON.stringify(m.state.winner));

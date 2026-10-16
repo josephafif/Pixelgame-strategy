@@ -2,7 +2,7 @@
 // population growth, housing, construction projects and upkeep.
 
 import { B, BIOMES, D, TREE_FEATURES } from '../world/biomes.js';
-import { BUILDINGS, HOUSE, STAGES, RULES, RES_KEYS, UNITS, LABOR } from './defs.js';
+import { BUILDINGS, HOUSE, STAGES, RULES, RES_KEYS, UNITS, LABOR, stagePopNeed } from './defs.js';
 import { completeBuilding, addMarketStalls } from '../settlement/planner.js';
 import * as military from './military.js';
 
@@ -236,11 +236,14 @@ export function tick(m, dt, second) {
           s.out[r] = (s.out[r] || 0) + amt / dt;
         }
       }
-      // Idle hands tend kitchen gardens: a little food, far less than a farm.
+      // Idle hands tend kitchen gardens and gather deadwood: far less than real work.
       if (s.jobs.idle > 0) {
         const f = s.jobs.idle * RULES.forage * s.site.fert * unrestF * dt;
         k.stock.food += f;
         s.out.food = (s.out.food || 0) + f / dt;
+        const w = s.jobs.idle * RULES.gatherWood * s.site.wood * unrestF * logi * dt;
+        k.stock.wood += w;
+        s.out.wood = (s.out.wood || 0) + w / dt;
       }
       // Consumption.
       need.food += s.pop * RULES.foodPerPop;
@@ -330,7 +333,7 @@ function growth(m, s, k, dt) {
   } else if (s.pop > s.housing + 0.5) {
     dp = -(s.pop - s.housing) * 0.03;
   }
-  if (s.site.cold && k.flags.cold) dp -= s.pop * 0.004;
+  if (s.site.cold && k.flags.cold) dp -= s.pop * RULES.coldLoss;
   if (s.siege && s.siege.blockade) dp = Math.min(dp, 0);
   s.pop = Math.max(1, s.pop + dp * dt);
 }
@@ -340,8 +343,12 @@ function houseCost(s) {
 }
 
 function autoHousing(m, s, k) {
+  // A full layout is retried once it has changed (new roads, a neighbour's buildings gone).
+  if (s.full && m.layouts.get(s.id).v !== s.fullV) s.full = false;
   if (s.full || s.unrest > 0) return;
   if (k.flags.starving || foodSecurity(m, k) < 0.25) return; // no one builds while hungry
+  // Nor while the stores are shrinking towards empty (less than three minutes left).
+  if ((k.rates.food ?? 0) < 0 && k.stock.food < (k.need?.food || 0) * 180) return;
   const building = s.projects.filter((p) => p.type === 'house').length;
   const maxPar = 1 + Math.floor(s.stage / 2);
   if (building >= maxPar) return;
@@ -357,7 +364,9 @@ function autoHousing(m, s, k) {
   const b = m.layoutAdd(s, 'house', 'site');
   if (!b) {
     s.full = true;
-    m.event(k.id, 'warn', `${s.name} has no room for more houses.`, s.x, s.y);
+    s.fullV = m.layouts.get(s.id).v;
+    if (!s.fullWarned) m.event(k.id, 'warn', `${s.name} has no room for more houses: grow it a stage to open new ground.`, s.x, s.y);
+    s.fullWarned = true;
     return;
   }
   m.pay(k.id, cost);
@@ -503,7 +512,8 @@ export function stageUpError(m, s) {
   if (!next) return 'Already a city.';
   if (s.projects.some((p) => p.type === 'stage')) return 'Already growing.';
   const up = next.up;
-  if (s.pop < up.pop) return `Needs ${up.pop} people (has ${Math.floor(s.pop)}).`;
+  const need = stagePopNeed(s);
+  if (s.pop < need) return `Needs ${need} people (has ${Math.floor(s.pop)}).`;
   for (const need of up.needs || []) {
     if (need === 'hall' && s.capital) continue;
     if (!s.buildings[need]) return `Needs a ${BUILDINGS[need].name.toLowerCase()}.`;

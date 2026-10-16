@@ -48,6 +48,8 @@ export class Match {
     this.queue = [];
     this.territoryDirty = true;
     this.listeners = new Set();
+    // Loading a saved game (engine/sim/persist.js) fills in the rest.
+    if (opts.restore) return;
     const names = kingdomNames(seed, opts.players?.length || 1);
     this.state = {
       seed,
@@ -104,6 +106,7 @@ export class Match {
       stats: { pop: 0, soldiers: 0, settlements: 0, workers: 0, idle: 0 },
       score: 0,
       wonderHeld: 0,
+      domHeld: 0,
       warWeariness: 0,
       caravans: 0,
       ai_: null,
@@ -121,6 +124,12 @@ export class Match {
     this.state.eventSeq = (this.state.eventSeq || 0) + 1;
     this.state.events.push({ seq: this.state.eventSeq, t: this.state.t, kid, kind, text, x, y });
     if (this.state.events.length > 400) this.state.events.splice(0, this.state.events.length - 300);
+  }
+
+  /** Count a notable happening for the chronicle's statistics. */
+  tally(key, n = 1) {
+    const t = (this.state.tally ||= {});
+    t[key] = (t[key] || 0) + n;
   }
 
   kingdom(kid) {
@@ -302,10 +311,12 @@ export class Match {
     k.placed = true;
     s.capital = true;
     s.connected = true;
-    for (const plan of ['farm', 'farm', 'lumber']) {
-      if (this.layoutAdd(s, BUILDINGS[plan].plan)) s.buildings[plan] = (s.buildings[plan] || 0) + 1;
+    // The lumber camp first (it needs forest, the most contested ground), then
+    // homes and fields in turn so that neither crowds the other out.
+    for (const plan of ['lumber', 'house', 'house', 'farm', 'house', 'farm', 'house', 'house']) {
+      if (plan === 'house') this.layoutAdd(s, 'house');
+      else if (this.layoutAdd(s, BUILDINGS[plan].plan)) s.buildings[plan] = (s.buildings[plan] || 0) + 1;
     }
-    for (let i = 0; i < 5; i++) this.layoutAdd(s, 'house');
     s.garrison.inf = 6;
     economy.computeSite(this, s);
     this.recalcHousing(s);
@@ -486,7 +497,8 @@ export class Match {
   exec(kid, cmd) {
     try {
       const r = applyCommand(this, kid, cmd);
-      if (r && r.error && kid >= 0) this.event(kid, 'error', r.error);
+      // Rejected commands are reported to human players; AIs simply try something else.
+      if (r && r.error && kid >= 0 && !this.state.kingdoms[kid]?.ai) this.event(kid, 'error', r.error);
       return r || { ok: true };
     } catch (e) {
       if (kid >= 0) this.event(kid, 'error', `Command failed: ${e.message}`);
@@ -603,10 +615,17 @@ export class Match {
     }
     const living = st.kingdoms.filter((k) => k.alive);
     const total = st.settlements.filter((s) => !s.hub).length;
+    const allPop = living.reduce((a, k) => a + k.stats.pop, 0);
     for (const k of living) {
       const mine = this.settlementsOf(k.id).length;
       if (living.length === 1 && st.kingdoms.length > 1) return this.end(k, 'conquest');
-      if (total >= 6 && mine / total >= 0.7) return this.end(k, 'domination');
+      // Domination needs most towns and most people, held long enough for rivals to answer.
+      const dominant = living.length > 1 && total >= 8 && mine / total >= RULES.dominationTowns && k.stats.pop >= allPop * RULES.dominationPop;
+      if (dominant) {
+        if (!k.domHeld) this.event(-1, 'war', `${k.name} dominates the realm: unless rivals take towns back within ${RULES.dominationHold / 60} minutes, it wins.`);
+        k.domHeld = (k.domHeld || 0) + 1;
+        if (k.domHeld >= RULES.dominationHold) return this.end(k, 'domination');
+      } else k.domHeld = 0;
       if (k.wonderHeld >= RULES.wonderHold) return this.end(k, 'prosperity');
     }
     if (this.opts.timeLimit > 0 && st.t >= this.opts.timeLimit) {

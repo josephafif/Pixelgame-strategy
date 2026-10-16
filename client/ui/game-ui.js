@@ -2,7 +2,7 @@
 // realm tabs (labour, trade, diplomacy, chronicle), placement, action modes
 // and input. Every action is sent as a command; the simulation validates it.
 
-import { BUILDINGS, STAGES, WALLS, UNITS, RESOURCES, RES_KEYS, LABOR, RULES } from '../../engine/sim/defs.js';
+import { BUILDINGS, STAGES, WALLS, UNITS, RESOURCES, RES_KEYS, LABOR, RULES, stagePopNeed } from '../../engine/sim/defs.js';
 import { analyzeSite, describeSite, canFoundAt } from '../../engine/world/sites.js';
 import { BIOMES } from '../../engine/world/biomes.js';
 import { STYLES } from '../../engine/settlement/styles.js';
@@ -235,10 +235,11 @@ export class GameUI {
     const next = STAGES[s.stage + 1];
     if (next) {
       const up = next.up;
-      const reqs = [`${Math.floor(s.pop)}/${up.pop} people`];
+      const popNeed = stagePopNeed(s);
+      const reqs = [`${Math.floor(s.pop)}/${popNeed} people${popNeed < up.pop ? ' (out of room)' : ''}`];
       for (const n of up.needs || []) if (!(n === 'hall' && s.capital)) reqs.push(`${s.buildings[n] ? '✓' : '✗'} ${BUILDINGS[n].name}`);
       if (up.connected) reqs.push(`${s.connected ? '✓' : '✗'} road to the capital`);
-      const ok = s.pop >= up.pop && (up.needs || []).every((n) => (n === 'hall' && s.capital) || s.buildings[n]) && (!up.connected || s.connected) && canPay(me, up.cost);
+      const ok = s.pop >= popNeed && (up.needs || []).every((n) => (n === 'hall' && s.capital) || s.buildings[n]) && (!up.connected || s.connected) && canPay(me, up.cost);
       const growing = (s.projects || []).some((p) => p.type === 'stage');
       grow = `<h3>Grow into a ${next.name.toLowerCase()}</h3>
         <div class="small muted">${reqs.join(' · ')}</div>
@@ -287,7 +288,7 @@ export class GameUI {
         <div style="margin-top:6px">${tags.join('')}</div>
         ${out.length ? `<div class="small" style="margin-top:6px">${out.join(' · ')}</div>` : ''}
         ${grow}
-        <h3>Work</h3>${work || '<div class="small muted">No workplaces yet.</div>'}<div class="small muted">${s.jobs?.idle || 0} idle (they forage and help build)</div>
+        <h3>Work</h3>${work || '<div class="small muted">No workplaces yet.</div>'}<div class="small muted">${s.jobs?.idle || 0} idle (they forage, gather deadwood and help build)</div>
         <h3>Construction</h3>${projects}
         <h3>Build</h3><div class="list">${build}</div>
         <h3>Garrison</h3><div class="small">${garrison}${training ? `<br><span class="muted">Training: ${training}</span>` : ''}</div>
@@ -376,6 +377,7 @@ export class GameUI {
       <div style="margin-top:6px">${flags.join('')}</div>
       ${need ? `<div class="small muted">Your people consume ${need}.</div>` : ''}
       ${me.wonderHeld > 0 ? `<div class="tag good">Grand Exchange held ${Math.floor(me.wonderHeld)}/${RULES.wonderHold}s</div>` : ''}
+      ${me.domHeld > 0 ? `<div class="tag good">Dominating the realm ${Math.floor(me.domHeld)}/${RULES.dominationHold}s</div>` : ''}
       <h3>Labour priorities</h3>
       <div class="prio small">${prio}</div>
       <div class="small muted">Workers fill the jobs of high-priority work first. Building covers houses, projects and roads.</div>
@@ -433,7 +435,7 @@ export class GameUI {
     }).join('');
     const peace = (cw.snap.proposals || []).filter((p) => p.peace && p.to === cw.you).map((p) => `<div class="item"><span>${esc(cw.kingdom(p.from)?.name)} offers peace</span><span><button class="btn small go" data-act="answer-peace" data-id="${p.id}" data-accept="1">Accept</button> <button class="btn small" data-act="answer-peace" data-id="${p.id}" data-accept="0">Refuse</button></span></div>`).join('');
     return `${peace ? `<h3>Peace offers</h3>${peace}` : ''}<h3>Kingdoms</h3><div class="list">${rows}</div>
-      <div class="small muted">At peace, borders are closed to armies. War opens them, stops agreements and lets armies seize caravans. Victory: conquer every rival, hold 70% of all towns, or build the Grand Exchange in a city and hold it for ${RULES.wonderHold / 60} minutes. Otherwise the best score wins when time runs out.</div>`;
+      <div class="small muted">At peace, borders are closed to armies. War opens them, stops agreements and lets armies seize caravans. Victory: conquer every rival, hold two thirds of all towns and 60% of all people for ${RULES.dominationHold / 60} minutes, or build the Grand Exchange in a city and hold it for ${RULES.wonderHold / 60} minutes. Otherwise the best score wins when time runs out.</div>`;
   }
 
   chronicleHtml() {

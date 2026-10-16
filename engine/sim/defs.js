@@ -44,9 +44,9 @@ export const BUILDINGS = {
   barracks: { name: 'Barracks', plan: 'barracks', cost: { wood: 40, stone: 30 }, work: 36, jobs: 0, stage: 1, effect: { recruit: 10 }, desc: 'Trains up to 10 recruits at a time.' },
   stables: { name: 'Stables', plan: 'stables', cost: { wood: 45 }, work: 30, jobs: 0, stage: 2, once: true, effect: { cavalry: 1 }, desc: 'Allows cavalry.' },
   siegeworks: { name: 'Siege works', plan: 'siegeworks', cost: { wood: 60, iron: 20 }, work: 45, jobs: 0, stage: 2, once: true, effect: { siege: 1 }, desc: 'Allows siege engines.' },
-  temple: { name: 'Temple', plan: 'temple', cost: { stone: 60, wood: 20 }, work: 60, jobs: 2, stage: 2, once: true, effect: { prosperity: 0.12, unrest: 2 }, desc: 'Prosperity; unrest after conquest fades faster. Needed for cities.' },
-  tavern: { name: 'Tavern', plan: 'tavern', cost: { wood: 30 }, work: 22, jobs: 2, stage: 2, once: true, effect: { prosperity: 0.06 }, desc: 'Prosperity and happier soldiers.' },
-  hall: { name: 'Town hall', plan: 'hall', cost: { wood: 40, stone: 30 }, work: 40, jobs: 2, stage: 1, once: true, notCapital: true, effect: { admin: 1 }, desc: 'Administration: required for a town.' },
+  temple: { name: 'Temple', plan: 'temple', cost: { stone: 60, wood: 20 }, work: 60, jobs: 0, stage: 2, once: true, effect: { prosperity: 0.12, unrest: 2 }, desc: 'Prosperity; unrest after conquest fades faster. Needed for cities.' },
+  tavern: { name: 'Tavern', plan: 'tavern', cost: { wood: 30 }, work: 22, jobs: 0, stage: 2, once: true, effect: { prosperity: 0.06 }, desc: 'Prosperity and happier soldiers.' },
+  hall: { name: 'Town hall', plan: 'hall', cost: { wood: 40, stone: 30 }, work: 40, jobs: 0, stage: 1, once: true, notCapital: true, effect: { admin: 1 }, desc: 'Administration: required for a town.' },
   tower: { name: 'Watchtower', plan: 'tower', cost: { wood: 20, stone: 10 }, work: 16, jobs: 0, stage: 0, effect: { vision: 4, defense: 0.1 }, desc: 'Vision and a little defence.' },
   wonder: { name: 'Grand Exchange', plan: 'wonder', cost: { goods: 250, crystal: 80, stone: 350, coin: 2500 }, work: 300, jobs: 0, stage: 4, once: true, capitalOnly: true, effect: { prosperity: 0.2 }, desc: 'A trade wonder. Hold it for 3 minutes to win by prosperity.' },
 };
@@ -85,12 +85,14 @@ export const UNIT_KEYS = Object.keys(UNITS);
 export const RULES = {
   laborShare: 0.8, // share of population able to work
   foodPerPop: 0.02,
-  fuelPerPopCold: 0.004,
+  fuelPerPopCold: 0.0015,
+  coldLoss: 0.0015, // population share lost per second in a cold town without fuel
   herbsPerPop: 0.0015, // village and larger
   goodsPerPop: 0.0025, // town and larger
   growth: 0.0075,
   starve: 0.004,
   forage: 0.02, // food per idle worker per second (kitchen gardens)
+  gatherWood: 0.01, // wood per idle worker per second (deadwood), times the site's forest
   taxPerPop: 0.006,
   baseStorage: 500,
   builderRate: 0.18, // work units per builder per second
@@ -107,17 +109,28 @@ export const RULES = {
   caravanCargo: 40,
   caravanCostPerTile: 0.05, // coin per tile, each way
   marketFee: 0.1,
-  armySpeed: 0.6, // tiles per second on open ground
+  armySpeed: 0.75, // tiles per second on open ground
   roadSpeed: 2.0,
   supplyRange: 6,
-  supplyCap: 90, // seconds of food carried
+  supplyCap: 150, // seconds of food carried
   engageRange: 1.4,
   siegeRange: 2.5,
   levyMax: 0.15,
   unrestCapture: 90,
   wonderHold: 180,
+  // Domination: this share of all kingdom towns and of all people, held this long.
+  dominationTowns: 0.66,
+  dominationPop: 0.6,
+  dominationHold: 240,
   demobilizeTime: 12,
 };
+
+/** People needed for the next stage; a settlement out of room may grow at three quarters. */
+export function stagePopNeed(s) {
+  const up = STAGES[s.stage + 1]?.up;
+  if (!up) return Infinity;
+  return s.full ? Math.ceil(Math.min(up.pop, Math.max(up.pop * 0.75, s.housing - 2))) : up.pop;
+}
 
 export function costText(cost) {
   return Object.entries(cost).map(([k, v]) => `${v} ${k}`).join(', ');

@@ -6,33 +6,9 @@
 import { serializeLayout } from '../settlement/planner.js';
 import { STAGES } from '../sim/defs.js';
 import { total } from '../sim/military.js';
+import { rle } from '../core/rle.js';
 
-/** Run-length encode a typed array into [value, count, value, count, ...]. */
-export function rle(arr) {
-  const out = [];
-  let v = arr[0];
-  let n = 0;
-  for (let i = 0; i < arr.length; i++) {
-    if (arr[i] === v) n++;
-    else {
-      out.push(v, n);
-      v = arr[i];
-      n = 1;
-    }
-  }
-  out.push(v, n);
-  return out;
-}
-
-export function unrle(data, Type, length) {
-  const out = new Type(length);
-  let i = 0;
-  for (let k = 0; k < data.length; k += 2) {
-    out.fill(data[k], i, i + data[k + 1]);
-    i += data[k + 1];
-  }
-  return out;
-}
+export { rle, unrle } from '../core/rle.js';
 
 const round = (v, d = 1) => Math.round(v * d) / d;
 
@@ -50,6 +26,7 @@ function publicKingdom(k) {
     stats: k.stats,
     score: k.score,
     wonderHeld: round(k.wonderHeld),
+    domHeld: k.domHeld || 0,
   };
 }
 

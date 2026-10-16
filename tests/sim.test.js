@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Match } from '../engine/sim/match.js';
 import { TICK, UNITS, RULES, WALLS } from '../engine/sim/defs.js';
+import { canFoundAt } from '../engine/world/sites.js';
 import { B } from '../engine/world/biomes.js';
 import { priceOf } from '../engine/sim/trade.js';
 import { validateLayout } from '../engine/settlement/validate.js';
@@ -398,4 +399,36 @@ test('every suggested start site gives a capital room to grow', () => {
       assert.ok(!cap.full, 'room for more houses');
     }
   }
+});
+
+test('domination must be held: most towns and people for several minutes', () => {
+  const m = twoKingdoms();
+  const home = cap(m, 0);
+  // Give the first realm a ring of outposts far from its rival.
+  let added = 0;
+  for (let r = 12; r < 60 && added < 8; r += 4) {
+    for (let a = 0; a < 16 && added < 8; a++) {
+      const x = Math.round(home.x + Math.cos(a * 0.39) * r);
+      const y = Math.round(home.y + Math.sin(a * 0.39) * r);
+      if (!canFoundAt(m.world, x, y)) continue;
+      if (m.state.settlements.some((s) => Math.hypot(s.x - x, s.y - y) < 10)) continue;
+      m.newSettlement(0, x, y, { pop: 12 });
+      added++;
+    }
+  }
+  assert.equal(added, 8);
+  m.checkVictory();
+  assert.equal(m.state.winner, null, 'no instant win');
+  assert.ok(m.state.events.some((e) => /dominates the realm/.test(e.text)), 'rivals are warned');
+  for (let i = 0; i < RULES.dominationHold - 2; i++) m.checkVictory();
+  assert.equal(m.state.winner, null);
+  // Losing the majority resets the clock.
+  const saved = m.state.kingdoms[0].domHeld;
+  assert.ok(saved > 0);
+  for (const s of m.settlementsOf(0).slice(1, 7)) s.kingdom = 1;
+  m.checkVictory();
+  assert.equal(m.state.kingdoms[0].domHeld, 0);
+  for (const s of m.state.settlements) if (s.kingdom === 1 && !s.capital) s.kingdom = 0;
+  for (let i = 0; i <= RULES.dominationHold; i++) m.checkVictory();
+  assert.deepEqual(m.state.winner, { kid: 0, how: 'domination' });
 });

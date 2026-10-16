@@ -259,8 +259,10 @@ function capture(m, s, kid) {
     old.alive = false;
     st.armies = st.armies.filter((a) => a.kid !== oldKid);
     st.parties = st.parties.filter((p) => p.kid !== oldKid);
+    m.tally('falls');
     m.event(-1, 'fall', `${old.name} has fallen to ${k.name}.`, s.x, s.y);
   }
+  m.tally('captures');
   m.event(-1, 'capture', `${k.name} captures ${s.name} from ${old.name}.`, s.x, s.y);
 }
 
@@ -318,6 +320,7 @@ export function tick(m, dt) {
   }
   const losses = new Map();
   for (const [a, foes] of engaged) {
+    if (a.state !== 'battle') m.tally('battles', 0.5); // each clash counts once for its two sides
     a.state = 'battle';
     for (const b of foes) {
       const aMoving = a.path && a.pi < a.path.length - 1;
@@ -347,6 +350,7 @@ export function tick(m, dt) {
     }
     if (!s.siege) {
       s.siege = { by: besiegers[0].kid, t: 0, blockade: true };
+      m.tally('sieges');
       m.event(s.kingdom, 'military', `${s.name} is under siege by ${st.kingdoms[besiegers[0].kid].name}!`, s.x, s.y);
       m.event(besiegers[0].kid, 'military', `Your army besieges ${s.name}.`, s.x, s.y);
     }
@@ -364,7 +368,10 @@ export function tick(m, dt) {
     const gAtk = strength(m, s.garrison, { attacking: true, x: s.x, y: s.y, morale: 1 }) * (s.walls.hp > 0 ? 0.6 : 1);
     if (s.walls.level && s.walls.hp > 0) {
       s.walls.hp = Math.max(0, s.walls.hp - wallDmg * dt);
-      if (s.walls.hp === 0) m.event(-1, 'military', `The walls of ${s.name} are breached!`, s.x, s.y);
+      if (s.walls.hp === 0) {
+        m.tally('breaches');
+        m.event(-1, 'military', `The walls of ${s.name} are breached!`, s.x, s.y);
+      }
     } else if (gTotal >= 0.5) {
       const gDef = strength(m, s.garrison, { attacking: false, x: s.x, y: s.y, walls: wallMult, settlement: true }) / gTotal;
       const frac = applyLosses(s.garrison, (atk * 0.035 * dt) / Math.max(0.4, gDef));
@@ -394,6 +401,7 @@ export function tick(m, dt) {
       if (!m.atWar(a.kid, p.kid) || total(a.units) < 0.5) continue;
       if (Math.hypot(a.x - p.x, a.y - p.y) > 1.5) continue;
       st.parties = st.parties.filter((q) => q !== p);
+      m.tally('seized');
       const k = st.kingdoms[a.kid];
       if (p.cargo) k.stock[p.cargo.res] = (k.stock[p.cargo.res] || 0) + p.cargo.n;
       if (p.coin) k.coin += p.coin;
@@ -415,6 +423,7 @@ export function declareWar(m, kid, other) {
   b.relations[kid] = 'war';
   m.state.proposals = m.state.proposals.filter((p) => !((p.from === kid && p.to === other) || (p.from === other && p.to === kid)));
   m.pathCache.clear();
+  m.tally('wars');
   m.event(-1, 'war', `${a.name} declares war on ${b.name}!`);
   return { ok: true };
 }
@@ -453,5 +462,6 @@ export function makePeace(m, a, b) {
     const own = m.ownerK[i];
     if ((army.kid === a && own === b) || (army.kid === b && own === a)) retreat(m, army, 'must leave after the peace');
   }
+  m.tally('peace');
   m.event(-1, 'peace', `${A.name} and ${Bk.name} make peace.`);
 }
