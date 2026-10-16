@@ -2,7 +2,7 @@
 // realm tabs (labour, trade, diplomacy, chronicle), placement, action modes
 // and input. Every action is sent as a command; the simulation validates it.
 
-import { BUILDINGS, STAGES, WALLS, UNITS, RESOURCES, RES_KEYS, LABOR, RULES, HOUSE } from '../../engine/sim/defs.js';
+import { BUILDINGS, STAGES, WALLS, UNITS, RESOURCES, RES_KEYS, LABOR, RULES } from '../../engine/sim/defs.js';
 import { analyzeSite, describeSite, canFoundAt } from '../../engine/world/sites.js';
 import { BIOMES } from '../../engine/world/biomes.js';
 import { STYLES } from '../../engine/settlement/styles.js';
@@ -85,11 +85,7 @@ export class GameUI {
     }));
     this.bindInput();
     this.bindPanels();
-    if (this.cw.init.startSites.length) {
-      const s = this.cw.init.startSites[0];
-      this.r.centerOn(this.cw.W / 2, this.cw.H / 2, 3);
-      void s;
-    }
+    this.r.centerOn(this.cw.W / 2, this.cw.H / 2, 3);
   }
 
   destroy() {
@@ -848,4 +844,3 @@ export class GameUI {
   }
 }
 
-export { HOUSE };

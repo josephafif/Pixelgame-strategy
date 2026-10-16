@@ -102,14 +102,35 @@ function paintGableRoof(p, x0, x1, y0, y1, pal, { snow = false, ridge = 0.38, th
   return ridgeY;
 }
 
-function paintFlatRoof(p, x0, x1, y0, y1, pal) {
+function paintFlatRoof(p, x0, x1, y0, y1, pal, variant = 0) {
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       let c = pal.roof;
-      if (x === x0 || x === x1 || y === y0) c = pal.roofLight;
-      else if (y === y1 || y === y1 - 1) c = pal.roofDark;
+      if (x === x0 || x === x1 || y === y0) c = pal.roofLight; // parapet
+      else if (x === x0 + 1 || y === y0 + 1) c = shade(pal.roof, -0.12); // parapet shadow
+      else if (y >= y1 - 1) c = pal.roofDark;
+      else if ((x * 7 + y * 3) % 23 === 0) c = shade(pal.roof, 0.08);
       p.set(x, y, c);
     }
+  }
+  const w = x1 - x0;
+  const h = y1 - y0;
+  if (w < 8 || h < 6) return;
+  if (variant % 3 === 0) {
+    // Little dome over the stair.
+    const cx = x0 + 4;
+    const cy = y0 + 4;
+    p.ellipse(cx, cy, 3, 2.5, (dx, dy) => (dx + dy < -0.3 ? '#efdcae' : '#c9a876'));
+  } else if (variant % 3 === 1) {
+    // Roof hatch with a ladder.
+    p.rect(x1 - 5, y0 + 3, 3, 3, '#5a3e24');
+    p.vline(x1 - 5, y0 + 2, y0 + 6, '#8f6a3e');
+    p.vline(x1 - 3, y0 + 2, y0 + 6, '#8f6a3e');
+  } else {
+    // Water jars and a drying cloth.
+    p.ellipse(x0 + 4, y0 + 4, 1.6, 1.6, '#a0603a');
+    p.ellipse(x0 + 7, y0 + 4, 1.6, 1.6, '#b8703f');
+    p.hline(x0 + 3, x1 - 3, y1 - 3, '#d24a3a');
   }
 }
 
@@ -164,26 +185,6 @@ function paintCrenels(p, x0, x1, y, col, dark) {
   }
 }
 
-function paintTurret(p, cx, yTop, yBot, st, roofCol) {
-  // Round tower: 7 px wide, conical roof if roofCol given.
-  for (let y = yTop + 5; y <= yBot; y++) {
-    for (let x = cx - 3; x <= cx + 3; x++) {
-      const edge = x === cx - 3 ? st.light : x === cx + 3 ? st.dark : (y + x) % 5 === 0 ? st.mortar : st.base;
-      p.set(x, y, edge);
-    }
-  }
-  p.set(cx, yTop + 9, '#2a2a30');
-  p.set(cx, yTop + 10, '#2a2a30');
-  if (roofCol) {
-    for (let y = yTop; y < yTop + 6; y++) {
-      const half = Math.round(((y - yTop) / 5) * 4);
-      for (let x = cx - half; x <= cx + half; x++) p.set(x, y, x < cx ? shade(roofCol, 0.15) : roofCol);
-    }
-  } else {
-    paintCrenels(p, cx - 3, cx + 3, yTop + 2, st.light, st.dark);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Composite painters
 
@@ -207,7 +208,7 @@ function paintHouse(p, ox, oy, FW, FH, extra, style, pal, opts) {
   // Roof covers the rest of the footprint plus the extra height.
   const roofTop = oy;
   const roofBot = wt + 1;
-  if (style === 'adobe') paintFlatRoof(p, x0, x1, roofTop + 3, roofBot, pal);
+  if (style === 'adobe') paintFlatRoof(p, x0, x1, roofTop + 3, roofBot, pal, opts.variant || 0);
   else paintGableRoof(p, ox, ox + FW - 1, roofTop, roofBot, pal, { snow: style === 'nordic', thatch, rnd });
   // Windows per storey, door on the visible face.
   const doorPos = face === 's' && doorX !== null ? doorX : null;
@@ -223,47 +224,156 @@ function paintHouse(p, ox, oy, FW, FH, extra, style, pal, opts) {
   return { x0, x1, wt, wb, roofTop, roofBot, bottom };
 }
 
+function stoneBlock(p, x0, y0, x1, y1, st, rnd) {
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const ry = y - y0;
+      const joint = ry % 4 === 3 || (x + (Math.floor(ry / 4) % 2) * 3) % 6 === 0;
+      let c = joint ? st.mortar : rnd() < 0.12 ? st.light : rnd() < 0.08 ? st.dark : st.base;
+      if (x === x0) c = st.light;
+      if (x === x1) c = st.dark;
+      p.set(x, y, c);
+    }
+  }
+}
+
+function castleTower(p, cx, half, yTop, yBot, st, roof, rnd) {
+  // A round tower: shaded shaft, crenellated or conical top.
+  for (let y = yTop + 4; y <= yBot; y++) {
+    for (let x = cx - half; x <= cx + half; x++) {
+      const rel = (x - cx) / half;
+      let c = rel < -0.5 ? st.light : rel > 0.55 ? st.dark : (y + (x >> 1)) % 5 === 0 ? st.mortar : st.base;
+      if (rnd() < 0.05) c = st.dark;
+      p.set(x, y, c);
+    }
+  }
+  p.rect(cx, yTop + 9, 1, 3, '#26222a');
+  if (roof) {
+    for (let y = yTop - 6; y < yTop + 5; y++) {
+      const t = (y - (yTop - 6)) / 10;
+      const w = Math.round((half + 1) * t);
+      for (let x = cx - w; x <= cx + w; x++) p.set(x, y, x < cx ? shade(roof, 0.18) : x > cx + w / 2 ? shade(roof, -0.15) : roof);
+    }
+    p.set(cx, yTop - 7, '#e8c060');
+  } else {
+    for (let x = cx - half - 1; x <= cx + half + 1; x++) {
+      p.set(x, yTop + 3, st.light);
+      p.set(x, yTop + 4, st.dark);
+      if ((x - cx + half + 1) % 3 !== 2) {
+        p.set(x, yTop + 1, st.light);
+        p.set(x, yTop + 2, st.base);
+      }
+    }
+  }
+}
+
+/** The capital's seat: lord's hall (1), walled keep (2), castle (3). */
 function keep(p, ox, oy, FW, FH, extra, style, pal, o) {
   const st = stoneOf(style);
   const bottom = oy + FH + extra - 1;
+  const top = oy + extra; // footprint top edge
   const lvl = o.level;
-  // Curtain block.
-  const bodyTop = bottom - 16 - lvl * 2;
-  for (let y = bodyTop; y <= bottom; y++) {
-    for (let x = ox + 2; x <= ox + FW - 3; x++) {
-      const joint = (y - bodyTop) % 4 === 3 || (x + (Math.floor((y - bodyTop) / 4) % 2) * 3) % 6 === 0;
-      p.set(x, y, joint ? st.mortar : o.rnd() < 0.12 ? st.light : st.base);
-    }
-  }
-  paintCrenels(p, ox + 2, ox + FW - 3, bodyTop - 3, st.light, st.dark);
-  // Roof area behind (top surface of the keep).
-  for (let y = oy + 6; y < bodyTop - 3; y++) for (let x = ox + 3; x <= ox + FW - 4; x++) p.set(x, y, (x + y) % 7 === 0 ? st.dark : shade(st.base, -0.12));
-  // Central donjon.
+  const rnd = o.rnd;
+  const roofCol = style === 'adobe' ? '#c9a24a' : style === 'ash' ? '#7b2f2b' : style === 'nordic' ? '#4a3524' : style === 'harbor' ? '#3d7ba3' : '#3f5f9e';
   const cx = ox + (FW >> 1);
-  const dTop = oy + (lvl >= 3 ? 0 : 3);
-  for (let y = dTop + 6; y <= bodyTop + 4; y++) {
-    for (let x = cx - 6; x <= cx + 6; x++) {
-      const joint = (y - dTop) % 4 === 3 || (x + (Math.floor((y - dTop) / 4) % 2) * 3) % 6 === 0;
-      p.set(x, y, x === cx - 6 ? st.light : x === cx + 6 ? st.dark : joint ? st.mortar : st.base);
+  if (lvl >= 2) {
+    // Courtyard enclosed by curtain walls seen from above.
+    for (let y = top; y <= bottom - 10; y++) {
+      for (let x = ox + 2; x <= ox + FW - 3; x++) {
+        const c = (x + (y >> 1) * 3) % 5 === 0 || y % 4 === 0 ? '#8e897f' : '#b4ae9f';
+        p.set(x, y, c);
+      }
+    }
+    // Back wall walkway.
+    for (let y = top - 3; y <= top + 2; y++) for (let x = ox + 1; x <= ox + FW - 2; x++) p.set(x, y, y === top - 3 ? st.light : y > top ? st.dark : st.base);
+    for (let x = ox + 1; x <= ox + FW - 2; x += 3) {
+      p.set(x, top - 4, st.light);
+      p.set(x, top - 5, st.light);
+    }
+    // Side walls.
+    for (let y = top - 3; y <= bottom - 10; y++) {
+      for (const x0 of [ox + 1, ox + FW - 6]) {
+        for (let x = x0; x < x0 + 5; x++) p.set(x, y, x === x0 ? st.light : x === x0 + 4 ? st.dark : st.base);
+      }
     }
   }
-  paintCrenels(p, cx - 6, cx + 6, dTop + 3, st.light, st.dark);
-  p.rect(cx - 1, dTop + 10, 2, 3, '#2a2a30');
-  paintBanner(p, cx + 1, dTop - 7 + 4, o.color);
-  // Gate.
-  const gx = cx - 3;
-  for (let j = 0; j < 9; j++) for (let i = 0; i < 6; i++) {
-    if (j === 0 && (i === 0 || i === 5)) continue;
-    p.set(gx + i, bottom - 8 + j, j % 3 === 2 ? '#4a3220' : '#6b4a2c');
+  // The donjon: a tall square tower.
+  const dw = Math.max(14, Math.round(FW * (lvl >= 3 ? 0.42 : 0.34)));
+  const dcx = lvl === 1 ? ox + FW - Math.round(dw / 2) - 3 : cx + (lvl === 2 ? Math.round(FW * 0.12) : 0);
+  const dBot = lvl >= 2 ? bottom - 9 : bottom;
+  const dTop = oy + (lvl >= 3 ? 8 : 12);
+  const dx0 = dcx - (dw >> 1);
+  const dx1 = dcx + (dw >> 1);
+  // Great hall (left) with a pitched roof, built against the donjon.
+  if (lvl <= 2) {
+    const hx0 = ox + (lvl >= 2 ? 7 : 2);
+    const hx1 = lvl === 1 ? dx0 + 1 : ox + Math.round(FW * 0.5);
+    const hb = lvl >= 2 ? bottom - 11 : bottom;
+    const ht = hb - 11;
+    paintWall(p, hx0 + 1, hx1 - 1, ht, hb, pal, wallMaterial(style), rnd, style);
+    paintGableRoof(p, hx0, hx1, hb - FH + 10, ht + 1, { ...pal, roof: roofCol, roofDark: shade(roofCol, -0.25), roofLight: shade(roofCol, 0.18) }, { rnd, snow: style === 'nordic' });
+    for (let x = hx0 + 4; x < hx1 - 4; x += 6) paintWindow(p, x, hb - 7, pal, { lit: true });
   }
-  for (let i = 0; i < 6; i++) p.set(gx + i, bottom - 9, st.dark);
-  // Arrow slits.
-  for (let x = ox + 6; x <= ox + FW - 8; x += 9) if (Math.abs(x - cx) > 5) p.rect(x, bodyTop + 6, 1, 3, '#2a2a30');
-  if (lvl >= 2) {
-    const roof = lvl >= 3 ? (style === 'adobe' ? '#c9a24a' : '#3f5f9e') : null;
-    paintTurret(p, ox + 5, bodyTop - 8, bottom, st, roof);
-    paintTurret(p, ox + FW - 6, bodyTop - 8, bottom, st, roof);
+  // Top surface then front face.
+  for (let y = dTop - 4; y < dTop; y++) for (let x = dx0; x <= dx1; x++) p.set(x, y, (x + y) % 6 === 0 ? st.dark : shade(st.base, -0.15));
+  stoneBlock(p, dx0, dTop, dx1, dBot, st, rnd);
+  for (let x = dx0 - 1; x <= dx1 + 1; x++) {
+    p.set(x, dTop - 1, st.light);
+    p.set(x, dTop, st.dark);
+    if ((x - dx0 + 1) % 4 < 2) {
+      p.set(x, dTop - 5, st.light);
+      p.set(x, dTop - 6, st.light);
+    }
   }
+  if (lvl >= 3) {
+    // Pyramid roof on the great tower.
+    for (let y = dTop - 18; y < dTop - 4; y++) {
+      const t = (y - (dTop - 18)) / 13;
+      const w = Math.round((dw / 2 + 1) * t);
+      for (let x = dcx - w; x <= dcx + w; x++) p.set(x, y, x < dcx ? shade(roofCol, 0.15) : shade(roofCol, -0.08));
+    }
+    paintBanner(p, dcx, dTop - 29, o.color);
+  } else {
+    paintBanner(p, dcx + 2, dTop - 16, o.color);
+  }
+  // Windows and slits on the donjon.
+  for (let y = dTop + 5; y < dBot - 8; y += 9) {
+    p.rect(dcx - 4, y, 2, 4, '#26222a');
+    p.rect(dcx + 3, y, 2, 4, '#26222a');
+  }
+  p.rect(dcx - 1, dTop + 4, 3, 3, '#ffd88a');
+  if (lvl === 1) {
+    // Hall door and steps.
+    paintDoor(p, dcx - 2, bottom - 1, pal, { w: 5, h: 8, arch: true });
+    return;
+  }
+  // Front curtain wall with a gatehouse.
+  stoneBlock(p, ox + 1, bottom - 10, ox + FW - 2, bottom, st, rnd);
+  for (let x = ox + 1; x <= ox + FW - 2; x++) {
+    p.set(x, bottom - 11, st.light);
+    if ((x - ox) % 4 < 2) {
+      p.set(x, bottom - 12, st.light);
+      p.set(x, bottom - 13, st.base);
+    }
+  }
+  const gw = 8;
+  for (let y = bottom - 8; y <= bottom; y++) {
+    for (let x = cx - gw / 2; x < cx + gw / 2; x++) {
+      const arch = y === bottom - 8 && (x === cx - gw / 2 || x === cx + gw / 2 - 1);
+      if (arch) continue;
+      p.set(x, y, (x - cx) % 2 === 0 || y % 3 === 0 ? '#3a2a1e' : '#1e1814');
+    }
+  }
+  castleTower(p, cx - gw / 2 - 3, 3, bottom - 17, bottom, st, null, rnd);
+  castleTower(p, cx + gw / 2 + 2, 3, bottom - 17, bottom, st, null, rnd);
+  // Corner towers.
+  const roof = lvl >= 3 ? roofCol : null;
+  if (lvl >= 3) {
+    castleTower(p, ox + 5, 4, top - 10, top + 8, st, roof, rnd);
+    castleTower(p, ox + FW - 6, 4, top - 10, top + 8, st, roof, rnd);
+  }
+  castleTower(p, ox + 5, 4, bottom - 22, bottom, st, roof, rnd);
+  castleTower(p, ox + FW - 6, 4, bottom - 22, bottom, st, roof, rnd);
 }
 
 function temple(p, ox, oy, FW, FH, extra, style, pal, o) {
@@ -304,7 +414,6 @@ function temple(p, ox, oy, FW, FH, extra, style, pal, o) {
   p.set(cx, tTop + 13, '#e8c060');
   paintDoor(p, cx - 2, g.wb - 1, pal, { w: 5, h: 8, arch: true });
   p.ellipse(cx + 0.5, g.wb - 13, 1.6, 1.6, '#b04a6a');
-  void bottom;
 }
 
 function market(p, ox, oy, FW, FH, extra, style, pal, o) {
@@ -362,8 +471,6 @@ function mine(p, ox, oy, FW, FH, extra, style, pal, o, crystal = false) {
       }
     }
   }
-  void pal;
-  void o;
 }
 
 function kiln(p, ox, oy, FW, FH, extra, style, pal, o) {
@@ -372,9 +479,6 @@ function kiln(p, ox, oy, FW, FH, extra, style, pal, o) {
   p.ellipse(cx, bottom - 6, FW / 2 - 2, 10, (dx, dy) => (dx + dy < -0.5 ? '#b0644a' : dx + dy > 0.4 ? '#7a3e2c' : '#9a5038'));
   for (let y = bottom - 5; y <= bottom; y++) for (let x = Math.round(cx) - 3; x <= Math.round(cx) + 2; x++) p.set(x, y, y > bottom - 3 ? '#ff8a3a' : '#c24a1a');
   for (let k = 0; k < 4; k++) p.set(Math.round(cx) + (k % 2), bottom - 17 - k * 2, '#d8d4d0', 0.7 - k * 0.12);
-  void pal;
-  void o;
-  void style;
 }
 
 function watchtower(p, ox, oy, FW, FH, extra, style, pal, o) {
@@ -415,7 +519,6 @@ function constructionSite(p, ox, oy, FW, FH, extra, style, pal, o) {
   for (let x = ox + 3; x < ox + FW - 3; x += 2) if (o.rnd() < 0.5) p.set(x, bottom - 3, pal.wall);
   // Crane-ish diagonal brace.
   p.line(ox + 2, bottom - 2, ox + FW - 3, top, '#6f5030');
-  void style;
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +526,7 @@ function constructionSite(p, ox, oy, FW, FH, extra, style, pal, o) {
 /** Vertical overhang above the footprint for a kind/level. */
 function extraFor(kind, level, h) {
   switch (kind) {
-    case 'keep': return level >= 3 ? 22 : 16;
+    case 'keep': return level >= 3 ? 30 : level >= 2 ? 22 : 18;
     case 'temple': return 18;
     case 'tower': return 22;
     case 'wonder': return 20;

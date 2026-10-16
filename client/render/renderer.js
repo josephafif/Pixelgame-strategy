@@ -317,7 +317,8 @@ export class Renderer {
     const { x0, y0, x1, y1 } = this.view;
     const K = cw.ownerK;
     const W = cw.W;
-    const lw = Math.max(1, Math.round(ppt / 12));
+    const lw = Math.max(1, Math.round(ppt / 20));
+    ctx.globalAlpha = 0.85;
     for (let y = Math.max(0, y0); y < Math.min(cw.H - 1, y1); y++) {
       for (let x = Math.max(0, x0); x < Math.min(W - 1, x1); x++) {
         const i = y * W + x;
@@ -346,6 +347,7 @@ export class Renderer {
         }
       }
     }
+    ctx.globalAlpha = 1;
   }
 
   /** Interpolated position of a moving entity between the last two snapshots. */

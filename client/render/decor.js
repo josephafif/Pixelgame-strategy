@@ -206,8 +206,8 @@ export function wallSprite(level, n, e, s, w, tower, style) {
     if (level === 1) {
       // Palisade: sharpened stakes.
       const stakes = [];
-      if (e || w || !(n || s)) for (let x = (w ? 0 : 4); x < (e ? 16 : 12); x += 3) stakes.push([x, by - 4]);
-      if (n || s) for (let y = (n ? -8 : 2); y <= (s ? 12 : 8); y += 3) stakes.push([7, by - 8 + y]);
+      if (e || w || !(n || s)) for (let x = (w ? 0 : 4); x < (e ? 16 : 12); x += 2) stakes.push([x, by - 4]);
+      if (n || s) for (let y = (n ? -8 : 2); y <= (s ? 12 : 8); y += 2) stakes.push([7, by - 8 + y]);
       stakes.sort((a, b) => a[1] - b[1]);
       for (const [x, y] of stakes) {
         for (let j = 0; j < H; j++) {

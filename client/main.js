@@ -103,7 +103,6 @@ function lobbyScreen(room, me, isHost) {
     <label>Placement time (s) <input id="o-place" type="number" min="10" max="120" value="${o.placementTime}" ${isHost ? '' : 'disabled'}></label>
     <label>Time limit (min) <input id="o-time" type="number" min="10" max="180" value="${o.timeLimit}" ${isHost ? '' : 'disabled'}></label>
     <div class="footer"><button class="btn" data-go="leave">Leave</button>${isHost ? '<span><button class="btn" data-go="save-opts">Save settings</button> <button class="btn primary" data-go="start-room">Start match</button></span>' : '<span class="muted">Waiting for the host…</span>'}</div>`);
-  void me;
 }
 
 function loading(text) {

@@ -8,8 +8,11 @@
     "start": "node server/index.js",
     "dev": "node server/index.js --port 8080",
     "test": "node --test \"tests/*.test.js\"",
-    "scenarios": "node tools/render-scenarios.mjs",
-    "simulate": "node tools/simulate.mjs"
+    "lint": "npx --yes eslint@10.1.0 .",
+    "check": "npm run lint && npm test",
+    "simulate": "node tools/simulate.mjs",
+    "preview:world": "node tools/world-preview.mjs",
+    "preview:settlement": "node tools/settlement-preview.mjs"
   },
   "engines": {
     "node": ">=20"
