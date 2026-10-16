@@ -31,6 +31,96 @@ const store = {
 
 let session = null; // { transport, cw, renderer, ui, raf }
 
+// Saved single-player realm: the full save under one key, a short summary
+// under another so the menu can describe it without parsing the save.
+const SAVE_KEY = 'realmwright:save:single';
+const SAVE_INFO_KEY = 'realmwright:save:single:info';
+const AUTOSAVE_EVERY = 3 * 60 * 1000;
+
+function savedInfo() {
+  try {
+    return JSON.parse(localStorage.getItem(SAVE_INFO_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function readSave() {
+  try {
+    return JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+/** Store a save in the browser; returns false when storage is full or blocked. */
+function writeSave(data, info) {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    localStorage.setItem(SAVE_INFO_KEY, JSON.stringify({ ...info, at: Date.now() }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function describeInfo(i) {
+  if (!i) return '';
+  return `${esc(i.name)} · ${i.minutes} min · ${i.settlements} town${i.settlements === 1 ? '' : 's'} · ${esc(i.size)} map`;
+}
+
+async function saveSession(quiet = false) {
+  if (!session?.single || !session.cw) return false;
+  try {
+    const { data, info } = await session.transport.save();
+    const ok = writeSave(data, info);
+    if (!quiet) session.ui?.toast(ok ? 'Realm saved in this browser.' : 'The browser refused to store the save; download it instead.', ok ? 'info' : 'error');
+    return ok;
+  } catch (e) {
+    if (!quiet) session.ui?.toast(`Saving failed: ${e.message}`, 'error');
+    return false;
+  }
+}
+
+async function downloadSave() {
+  if (!session?.single) return;
+  const { data, info } = await session.transport.save();
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `realmwright-${String(info.name).replace(/[^\w-]+/g, '_')}-${info.minutes}min.json`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 1000);
+}
+
+function loadFromFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.addEventListener('change', async () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      if (data?.format !== 'realmwright-save') throw new Error('not a Realmwright save');
+      startLoaded(data);
+    } catch (e) {
+      titleMenu(`That file could not be loaded: ${e.message}.`);
+    }
+  });
+  input.click();
+}
+
+function startLoaded(data) {
+  endSession();
+  loading('Restoring the realm…');
+  runGame(new WorkerTransport({ load: data }), true);
+}
+
 function showModal(html) {
   modal.innerHTML = html;
   modalBack.hidden = false;
@@ -40,13 +130,19 @@ function hideModal() {
   modalBack.hidden = true;
 }
 
-function titleMenu() {
+function titleMenu(err = '') {
+  const info = savedInfo();
+  const live = session?.single && session.cw;
   showModal(`<h1>Realmwright</h1>
     <div class="tagline">Found a capital. Grow towns that build themselves.<br>Trade, scheme and wage war for the realm.</div>
+    ${err ? `<p class="bad" style="text-align:center">${esc(err)}</p>` : ''}
     <div class="menu">
       ${session ? '<button class="btn go" data-go="resume">Return to the realm</button>' : ''}
+      ${live ? '<button class="btn" data-go="save">Save the realm</button><button class="btn" data-go="download">Download save file</button>' : ''}
+      ${info && !live ? `<button class="btn go" data-go="continue">Continue saved realm<br><span class="small">${describeInfo(info)}</span></button>` : ''}
       <button class="btn primary" data-go="single">New realm (vs. AI)</button>
       <button class="btn" data-go="multi">Multiplayer</button>
+      <button class="btn" data-go="load-file">Load save file…</button>
       <button class="btn" data-go="help">How to play</button>
     </div>
     <p class="small muted" style="text-align:center;margin-top:18px">A real-time kingdom strategy game · pixel art in the spirit of Pixelgame</p>`);
@@ -114,6 +210,7 @@ function loading(text) {
 function endSession() {
   if (!session) return;
   cancelAnimationFrame(session.raf);
+  clearInterval(session.autosave);
   session.ui?.destroy();
   session.transport.close();
   for (const id of ['topbar', 'left', 'right', 'minimap-wrap', 'hint', 'placement']) $(id).hidden = true;
@@ -141,7 +238,8 @@ function runGame(transport, single) {
       return;
     }
     if (msg.t === 'error' && !started) {
-      multiSetup(msg.text);
+      if (single) titleMenu(msg.text);
+      else multiSetup(msg.text);
       return;
     }
     if (msg.t === 'disconnected') {
@@ -178,6 +276,12 @@ function runGame(transport, single) {
     if (cw.snap) s.ui.onSnap(cw.snap);
     let last = performance.now();
     let miniAt = 0;
+    // Single-player realms save themselves now and then.
+    if (single) {
+      s.autosave = setInterval(() => {
+        if (session === s && cw.snap?.phase === 'running') saveSession(true);
+      }, AUTOSAVE_EVERY);
+    }
     const loop = (now) => {
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
@@ -255,6 +359,14 @@ modal.addEventListener('click', (e) => {
   else if (go === 'multi') multiSetup();
   else if (go === 'help') helpScreen();
   else if (go === 'start-single') startSingle();
+  else if (go === 'save') saveSession().then(() => titleMenu());
+  else if (go === 'download') downloadSave();
+  else if (go === 'load-file') loadFromFile();
+  else if (go === 'continue') {
+    const data = readSave();
+    if (data) startLoaded(data);
+    else titleMenu('The saved realm could not be read.');
+  }
   else if (go === 'create' || go === 'join') connectMulti(go);
   else if (go === 'resume') {
     hideModal();

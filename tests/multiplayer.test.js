@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createGameServer } from '../server/index.js';
 import { unrle } from '../engine/net/protocol.js';
+import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function client(port) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
@@ -147,5 +150,59 @@ test('the server serves the client but not server code', async () => {
     assert.equal(trav.status, 404);
   } finally {
     await srv.close();
+  }
+});
+
+test('a running match survives a server restart and players rejoin with their token', { timeout: 120000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'realmwright-saves-'));
+  try {
+    let srv = createGameServer({ log: () => {}, saveDir: dir });
+    let port = await srv.listen(0, '127.0.0.1');
+    const a = client(port);
+    await a.opened;
+    a.send({ t: 'hello', name: 'Aster' });
+    a.send({ t: 'create', opts: { seed: 31, size: 'small', ais: 1, placementTime: 10 } });
+    const lobby = await a.wait((m) => m.t === 'lobby');
+    const code = lobby.room.code;
+    const joined = await a.wait((m) => m.t === 'joined');
+    a.send({ t: 'start' });
+    const init = await a.wait((m) => m.t === 'init');
+    a.send({ t: 'cmd', cmd: { type: 'place', x: init.startSites[0].x, y: init.startSites[0].y } });
+    await a.wait((m) => m.t === 'snap' && m.phase === 'running', 40000);
+    const before = await a.wait((m) => m.t === 'snap' && m.phase === 'running' && m.time > 3, 40000);
+    a.ws.close();
+    await new Promise((r) => setTimeout(r, 200));
+    await srv.close();
+    assert.deepEqual(readdirSync(dir), [`${code}.json`], 'the match was written to disk');
+
+    // A new server process on the same save directory.
+    srv = createGameServer({ log: () => {}, saveDir: dir });
+    port = await srv.listen(0, '127.0.0.1');
+    assert.equal(srv.rooms.size, 0, 'rooms load lazily');
+    const a2 = client(port);
+    await a2.opened;
+    a2.send({ t: 'hello', name: 'Aster' });
+    a2.send({ t: 'join', code, token: joined.token });
+    const init2 = await a2.wait((m) => m.t === 'init');
+    assert.equal(init2.you, init.you, 'same kingdom after the restart');
+    const snap = await a2.wait((m) => m.t === 'snap' && m.kingdoms[init.you].stock);
+    assert.equal(snap.phase, 'running');
+    assert.ok(snap.time >= before.time, `clock continues (${snap.time} >= ${before.time})`);
+    assert.ok(snap.settlements.some((s) => s.id === snap.kingdoms[init.you].capital), 'the capital is still there');
+    // And the match runs on.
+    await a2.wait((m) => m.t === 'snap' && m.time > snap.time + 1, 20000);
+    // A stranger with a wrong token only gets to watch.
+    const c = client(port);
+    await c.opened;
+    c.send({ t: 'hello', name: 'Corin' });
+    c.send({ t: 'join', code, token: 'nope' });
+    const ic = await c.wait((m) => m.t === 'init');
+    assert.equal(ic.you, -1);
+    a2.ws.close();
+    c.ws.close();
+    await new Promise((r) => setTimeout(r, 200));
+    await srv.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

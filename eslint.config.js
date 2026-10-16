@@ -1,6 +1,6 @@
 // Lint configuration (ESLint flat config, no plugins required).
 const shared = ['console', 'performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'queueMicrotask', 'structuredClone', 'URL', 'URLSearchParams', 'WebSocket', 'TextEncoder', 'TextDecoder', 'atob', 'btoa', 'globalThis', 'fetch', 'OffscreenCanvas'];
-const browser = ['window', 'document', 'navigator', 'location', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame', 'Worker', 'self', 'ImageData', 'HTMLCanvasElement'];
+const browser = ['window', 'document', 'Blob', 'navigator', 'location', 'localStorage', 'requestAnimationFrame', 'cancelAnimationFrame', 'Worker', 'self', 'ImageData', 'HTMLCanvasElement'];
 const node = ['process', 'Buffer'];
 const globals = Object.fromEntries([...shared, ...browser, ...node].map((g) => [g, 'readonly']));
 

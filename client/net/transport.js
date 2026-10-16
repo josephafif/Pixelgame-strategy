@@ -75,6 +75,20 @@ export class WorkerTransport {
     this.worker.postMessage({ t: 'speed', v });
   }
 
+  /** Ask the simulation for a saved game: resolves to { data, info }. */
+  save() {
+    const id = (this.saveId = (this.saveId || 0) + 1);
+    return new Promise((resolve, reject) => {
+      const off = this.onMessage((msg) => {
+        if (msg.t !== 'saved' || msg.id !== id) return;
+        off();
+        if (msg.error) reject(new Error(msg.error));
+        else resolve({ data: msg.data, info: msg.info });
+      });
+      this.worker.postMessage({ t: 'save', id });
+    });
+  }
+
   onMessage(fn) {
     this.handlers.add(fn);
     return () => this.handlers.delete(fn);

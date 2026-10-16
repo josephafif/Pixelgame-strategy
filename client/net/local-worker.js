@@ -4,6 +4,7 @@
 import { Match } from '../../engine/sim/match.js';
 import { TICK } from '../../engine/sim/defs.js';
 import { PlayerView, initMessage } from '../../engine/net/protocol.js';
+import { saveMatch, loadMatch, describeSave } from '../../engine/sim/persist.js';
 
 let match = null;
 let view = null;
@@ -36,11 +37,21 @@ self.addEventListener('message', (e) => {
   const msg = e.data;
   if (msg.t === 'start') {
     const o = msg.opts || {};
-    const players = [{ name: o.name || 'You' }];
-    const ais = o.ais ?? 3;
-    const pers = o.personalities || [];
-    for (let i = 0; i < ais; i++) players.push({ ai: true, personality: pers[i] || ['builder', 'merchant', 'warlord'][i % 3] });
-    match = new Match({ seed: o.seed ?? 1, size: o.size || 'medium', players, placementTime: 0, timeLimit: (o.timeLimit ?? 45) * 60 });
+    if (o.load) {
+      // A saved realm: the player is always kingdom 0 in single player.
+      try {
+        match = loadMatch(o.load);
+      } catch (err) {
+        self.postMessage({ t: 'error', fatal: true, text: `Could not load the save: ${err.message}` });
+        return;
+      }
+    } else {
+      const players = [{ name: o.name || 'You' }];
+      const ais = o.ais ?? 3;
+      const pers = o.personalities || [];
+      for (let i = 0; i < ais; i++) players.push({ ai: true, personality: pers[i] || ['builder', 'merchant', 'warlord'][i % 3] });
+      match = new Match({ seed: o.seed ?? 1, size: o.size || 'medium', players, placementTime: 0, timeLimit: (o.timeLimit ?? 45) * 60 });
+    }
     view = new PlayerView(match, 0);
     self.postMessage(initMessage(match, 0));
     post(view.messages(true));
@@ -54,6 +65,13 @@ self.addEventListener('message', (e) => {
       match.queue = [];
       for (const { kid, cmd } of q) match.exec(kid, cmd);
       post(view.messages());
+    }
+  } else if (msg.t === 'save' && match) {
+    try {
+      const data = saveMatch(match);
+      self.postMessage({ t: 'saved', id: msg.id, data, info: describeSave(data) });
+    } catch (err) {
+      self.postMessage({ t: 'saved', id: msg.id, error: err.message });
     }
   } else if (msg.t === 'speed') {
     speed = Math.max(0, Math.min(8, Number(msg.v) || 0));

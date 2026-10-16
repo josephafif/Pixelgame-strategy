@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { Match } from '../engine/sim/match.js';
 import { TICK } from '../engine/sim/defs.js';
 import { PlayerView, initMessage } from '../engine/net/protocol.js';
+import { saveMatch, loadMatch } from '../engine/sim/persist.js';
 
 const SIZES = ['small', 'medium', 'large'];
 const MAX_PLAYERS = 8;
@@ -42,6 +43,46 @@ export class Room {
     this.lastActive = Date.now();
   }
 
+  /** Everything needed to bring the room back after a restart. */
+  toSave() {
+    return {
+      format: 'realmwright-room',
+      version: 1,
+      code: this.code,
+      opts: this.opts,
+      created: this.created,
+      members: this.members.map((m) => ({ name: m.name, token: m.token, kid: m.kid })),
+      match: saveMatch(this.match),
+    };
+  }
+
+  /** A room restored from disk: everyone is away and the match is paused until someone returns. */
+  static fromSave(data) {
+    if (!data || data.format !== 'realmwright-room' || data.version !== 1) throw new Error('not a room save');
+    const room = Object.create(Room.prototype);
+    room.code = data.code;
+    room.host = null;
+    room.opts = sanitizeOpts(data.opts);
+    room.members = data.members.map((m) => ({ client: null, name: sanitizeName(m.name), token: String(m.token), kid: m.kid | 0, online: false }));
+    room.match = loadMatch(data.match);
+    room.views = new Map();
+    room.timer = null;
+    room.ticks = 0;
+    room.created = data.created || Date.now();
+    room.lastActive = Date.now();
+    room.restored = true;
+    return room;
+  }
+
+  get paused() {
+    return !!this.match && !this.timer;
+  }
+
+  resume() {
+    if (this.timer || !this.match) return;
+    this.timer = setInterval(() => this.tick(), TICK * 1000);
+  }
+
   get phase() {
     return this.match ? this.match.state.phase : 'lobby';
   }
@@ -71,8 +112,10 @@ export class Room {
       client.room = this;
       client.member = existing;
       client.ws.send({ t: 'joined', code: this.code, token: existing.token, kid: existing.kid });
-      if (this.match) this.sendInit(existing);
-      else this.broadcastLobby();
+      if (this.match) {
+        this.sendInit(existing);
+        this.resume(); // a restored match waits for its first returning player
+      } else this.broadcastLobby();
       return existing;
     }
     if (this.match) {
@@ -125,7 +168,7 @@ export class Room {
       m.kid = k;
     });
     for (const m of this.members) if (m.online) this.sendInit(m);
-    this.timer = setInterval(() => this.tick(), TICK * 1000);
+    this.resume();
     return null;
   }
 

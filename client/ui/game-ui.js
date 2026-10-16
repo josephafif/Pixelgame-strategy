@@ -113,7 +113,13 @@ export class GameUI {
       if (cap) {
         this.r.centerOn(cap.x, cap.y, 24);
         this.select({ type: 'settlement', id: cap.id });
+        this.focused = true;
       }
+    } else if (!this.focused && snap.phase !== 'placement') {
+      // Joining a match already under way (a saved realm, a reconnect): start at home.
+      const cap = this.cw.me && this.cw.settlement(this.cw.me.capital);
+      if (cap) this.r.centerOn(cap.x, cap.y, 16);
+      this.focused = true;
     }
     const now = performance.now();
     if (now - this.lastPanel > 450) {
