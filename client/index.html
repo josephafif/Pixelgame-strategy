@@ -22,8 +22,8 @@
     <div id="stats" class="chip" hidden>
       <span class="stat" title="Your share of all land"><img id="i-land" alt=""><b id="st-land"></b></span>
       <span class="stat pop" title="People (the bar shows how close you are to your limit)"><img id="i-pop" alt=""><b id="st-pop"></b></span>
-      <span class="stat" title="Troops"><img id="i-troops" alt=""><b id="st-troops"></b></span>
-      <span class="stat" title="Gold"><img id="i-gold" alt=""><b id="st-gold"></b></span>
+      <span class="stat" title="Soldiers in the field"><img id="i-army" alt=""><b id="st-army"></b></span>
+      <span class="stat" title="Gold (and its income per second)"><img id="i-gold" alt=""><b id="st-gold"></b></span>
     </div>
     <div id="top-right">
       <span id="time" class="chip"></span>
@@ -36,15 +36,17 @@
   <div id="board" hidden></div>
   <div id="notices" aria-live="polite"></div>
   <div id="hud-bottom">
-    <div id="attacks"></div>
+    <div id="selbar" hidden></div>
     <div id="bar" hidden>
-      <div class="sliders">
-        <label class="slider" title="Share of your troops each attack sends (Q/E)"><span>Attack <b id="v-ratio"></b></span><input type="range" id="r-ratio" min="5" max="100" step="5"></label>
-        <label class="slider" title="Share of your people under arms. Workers earn gold."><span>Troops <b id="v-share"></b></span><input type="range" id="r-share" min="5" max="95" step="5"></label>
+      <div class="army-head">
+        <button id="btn-target" class="tgt" title="Choose the realm to march on (T)"><span class="dot" id="tgt-dot"></span><span id="tgt-name">Wilds</span><span class="caret">▾</span></button>
+        <button id="btn-bulk" class="bulk" title="How many soldiers each drop sends (+ and − change it)">×10</button>
+        <div id="build"></div>
       </div>
-      <div id="build"></div>
+      <div id="cards"></div>
     </div>
   </div>
+  <div id="targets" hidden></div>
 </div>
 <div id="popup" hidden></div>
 <div id="minimap-wrap" hidden><canvas id="minimap" width="240" height="168"></canvas></div>

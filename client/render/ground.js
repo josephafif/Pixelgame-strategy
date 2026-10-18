@@ -1,15 +1,16 @@
 // Chunk renderer for the ground layer: per-pixel terrain with ragged biome
-// transitions, relief shading, shore foam, small ground details, roads,
-// bridges, plazas, fields and gardens, plus the natural objects standing on
-// tiles (trees, rocks). A chunk is drawn once into a canvas and cached.
+// transitions, relief shading, water depth, shore foam and wet banks, small
+// ground details, roads, bridges, plazas, fields and gardens, plus the
+// natural objects standing on tiles (trees, rocks) with soft cast shadows.
+// A chunk is drawn once into a canvas and cached.
 
 import { valueNoise } from '../../engine/core/noise.js';
 import { hash3 } from '../../engine/core/rng.js';
-import { B } from '../../engine/world/biomes.js';
-import { GROUND, FOAM, FOAM2, WET_SAND, ROADS, CROPS } from './palette.js';
-import { rgb, BAYER4 } from './color.js';
+import { B, TREE_FEATURES } from '../../engine/world/biomes.js';
+import { GROUND, FOAM, FOAM2, WET_SAND, WATER_DEPTH, ROADS, CROPS } from './palette.js';
+import { rgb, hex, mix, ramp7, packABGR, BAYER4 } from './color.js';
 import { makeCanvas } from './pix.js';
-import { featureSprite } from './nature.js';
+import { natureSprite } from './nature.js';
 
 export const TILE = 16;
 export const CHUNK = 32; // tiles per chunk side
@@ -36,18 +37,80 @@ export function cropIndex(name) {
 
 // Pack colours to little-endian ABGR uint32 for fast ImageData writes.
 const packCache = new Map();
-function pack(hex) {
-  let v = packCache.get(hex);
+function pack(c) {
+  let v = packCache.get(c);
   if (v === undefined) {
-    const [r, g, b] = rgb(hex);
-    v = (255 << 24) | (b << 16) | (g << 8) | r;
-    packCache.set(hex, v >>> 0);
-    v >>>= 0;
+    v = packABGR(c);
+    packCache.set(c, v);
   }
   return v;
 }
 
 const isWaterB = (b) => b <= B.RIVER;
+
+// Relief (slope light) and forest shade strength per biome, in ramp steps.
+const RELIEF = new Float32Array(16).fill(12);
+RELIEF[B.HILLS] = 24;
+RELIEF[B.TAIGA] = 18;
+RELIEF[B.MOUNTAIN] = 34;
+RELIEF[B.PEAK] = 30;
+RELIEF[B.SNOW] = 22;
+RELIEF[B.ASH] = 22;
+RELIEF[B.MARSH] = 8;
+RELIEF[B.BEACH] = 8;
+RELIEF[B.DESERT] = 16;
+const SHADE = new Float32Array(16).fill(1.4);
+SHADE[B.SNOW] = 0.9;
+SHADE[B.DESERT] = 1;
+
+/** RGB offset: c + (to - from). */
+function offset(c, from, to) {
+  const [r, g, b] = rgb(c);
+  const [r1, g1, b1] = rgb(from);
+  const [r2, g2, b2] = rgb(to);
+  return hex([r + r2 - r1, g + g2 - g1, b + b2 - b1]);
+}
+
+// Packed 7-step ramps (−3 … +3 around the fill) for both ground tones of
+// every biome, and depth ramps for water. Built once.
+let RAMPS = null;
+function ramps() {
+  if (RAMPS) return RAMPS;
+  const land = [];
+  for (let b = 0; b < 16; b++) {
+    const pal = GROUND[b];
+    if (!pal) {
+      land.push(null);
+      continue;
+    }
+    const a = ramp7(pal.base, pal.dark, pal.light).map((c) => packABGR(c));
+    const b2 = ramp7(pal.base2, offset(pal.base2, pal.base, pal.dark), offset(pal.base2, pal.base, pal.light)).map((c) => packABGR(c));
+    land.push([Uint32Array.from(a), Uint32Array.from(b2)]);
+  }
+  const water = {};
+  for (const k of Object.keys(WATER_DEPTH)) water[k] = Uint32Array.from(WATER_DEPTH[k].map((c) => packABGR(c)));
+  const waterLight = {};
+  for (const k of Object.keys(WATER_DEPTH)) waterLight[k] = Uint32Array.from(WATER_DEPTH[k].map((c) => packABGR(mix(c, '#e6f3e6', 0.32))));
+  RAMPS = {
+    land,
+    water,
+    waterLight,
+    foam: pack(FOAM),
+    foam2: pack(FOAM2),
+    wet: pack(WET_SAND),
+    wet2: pack(mix(WET_SAND, GROUND[B.BEACH].base, 0.5)),
+    wetDesert2: pack(mix(WET_SAND, GROUND[B.DESERT].base, 0.5)),
+    snow: pack(GROUND[B.MOUNTAIN].snow),
+    snow2: pack('#e3e6e0'),
+    sparkle: pack('#f4f7ec'),
+  };
+  return RAMPS;
+}
+
+// Scratch canvas for the chunk's shadow mask (painting is single-threaded
+// per worker, so one is enough).
+let maskCanvas = null;
+const SHADOW_ALPHA = 0.36;
 
 /**
  * Render chunk (cx, cy) to a canvas of CHUNK*TILE pixels.
@@ -61,6 +124,7 @@ export function renderChunk(world, cx, cy, ov) {
   const X0 = cx * S - M;
   const Y0 = cy * S - M;
   const seed = world.seed | 0;
+  const R = ramps();
   const cls = new Uint8Array(SM * SM); // warped biome per pixel
   // Tiles with a river within one tile need the (costlier) channel test.
   const TX0 = Math.floor(X0 / TILE) - 1;
@@ -87,8 +151,9 @@ export function renderChunk(world, cx, cy, ov) {
     const Y = Y0 + py;
     for (let px = 0; px < SM; px++) {
       const X = X0 + px;
-      const jx = ((hash3(X, Y, seed) & 3) - 1.5) * 0.7;
-      const jy = (((hash3(X, Y, seed) >> 2) & 3) - 1.5) * 0.7;
+      const hh = hash3(X, Y, seed);
+      const jx = ((hh & 3) - 1.5) * 0.7;
+      const jy = (((hh >> 2) & 3) - 1.5) * 0.7;
       const wx = (valueNoise(X * 0.14, Y * 0.14, seed + 11) - 0.5) * 6 + jx;
       const wy = (valueNoise(X * 0.14 + 31.7, Y * 0.14 - 7.1, seed + 12) - 0.5) * 6 + jy;
       let tx = Math.floor((X + wx) / TILE);
@@ -128,24 +193,94 @@ export function renderChunk(world, cx, cy, ov) {
     return a + (b2 - a) * tx + (c - a) * ty + (a - b2 - c + d) * tx * ty;
   };
   const { mountT, peakT } = world.thresholds;
-  // Relief: slope lighting and height sampled at tile centres, then
-  // interpolated per pixel (cheap, smooth).
+  const snowLine = mountT + (peakT - mountT) * 0.65;
+  const tx0 = cx * CHUNK;
+  const ty0 = cy * CHUNK;
+  // Per tile (with a one-tile ring): slope light, height, tree cover and
+  // distance to land (water depth). Interpolated per pixel later.
   const GT = CHUNK + 2;
   const gLit = new Float32Array(GT * GT);
   const gH = new Float32Array(GT * GT);
+  const gTree = new Float32Array(GT * GT);
   for (let ty = 0; ty < GT; ty++) {
     for (let tx = 0; tx < GT; tx++) {
-      const fx = cx * CHUNK + tx - 1;
-      const fy = cy * CHUNK + ty - 1;
+      const fx = tx0 + tx - 1;
+      const fy = ty0 + ty - 1;
       const gx = hAt(fx + 0.5, fy) - hAt(fx - 0.5, fy);
       const gy = hAt(fx, fy + 0.5) - hAt(fx, fy - 0.5);
       gLit[ty * GT + tx] = -(gx * 0.7 + gy * 0.9);
       gH[ty * GT + tx] = hAt(fx, fy);
+      let trees = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const x = fx + dx;
+          const y = fy + dy;
+          if (x < 0 || y < 0 || x >= W || y >= H) continue;
+          const i = y * W + x;
+          if (TREE_FEATURES.has(feature[i]) && !ov.cleared[i]) trees += dx || dy ? 1 : 1.5;
+        }
+      }
+      gTree[ty * GT + tx] = Math.min(1, trees / 8);
     }
   }
+  // Water depth: chamfer distance (in tiles) to the nearest land tile, over
+  // the chunk plus a margin wide enough that chunks agree at their seams.
+  const MG = 7;
+  const DT = CHUNK + 2 * MG;
+  const dist = new Float32Array(DT * DT);
+  for (let ty = 0; ty < DT; ty++) {
+    for (let tx = 0; tx < DT; tx++) {
+      const x = tx0 + tx - MG;
+      const y = ty0 + ty - MG;
+      const water = x < 0 || y < 0 || x >= W || y >= H || isWaterB(biome[y * W + x]);
+      dist[ty * DT + tx] = water ? 99 : 0;
+    }
+  }
+  for (let ty = 0; ty < DT; ty++) {
+    for (let tx = 0; tx < DT; tx++) {
+      const i = ty * DT + tx;
+      let d = dist[i];
+      if (d === 0) continue;
+      if (tx > 0) d = Math.min(d, dist[i - 1] + 1);
+      if (ty > 0) {
+        d = Math.min(d, dist[i - DT] + 1);
+        if (tx > 0) d = Math.min(d, dist[i - DT - 1] + 1.41);
+        if (tx < DT - 1) d = Math.min(d, dist[i - DT + 1] + 1.41);
+      }
+      dist[i] = d;
+    }
+  }
+  for (let ty = DT - 1; ty >= 0; ty--) {
+    for (let tx = DT - 1; tx >= 0; tx--) {
+      const i = ty * DT + tx;
+      let d = dist[i];
+      if (d === 0) continue;
+      if (tx < DT - 1) d = Math.min(d, dist[i + 1] + 1);
+      if (ty < DT - 1) {
+        d = Math.min(d, dist[i + DT] + 1);
+        if (tx < DT - 1) d = Math.min(d, dist[i + DT + 1] + 1.41);
+        if (tx > 0) d = Math.min(d, dist[i + DT - 1] + 1.41);
+      }
+      dist[i] = Math.min(d, MG);
+    }
+  }
+  const sampleDist = (fx, fy) => {
+    // fx, fy in tile units relative to the chunk origin (tile centres at +0.5).
+    const gx = fx - 0.5 + MG;
+    const gy = fy - 0.5 + MG;
+    const x0 = Math.max(0, Math.min(DT - 2, Math.floor(gx)));
+    const y0 = Math.max(0, Math.min(DT - 2, Math.floor(gy)));
+    const tx = gx - x0;
+    const ty = gy - y0;
+    const a = dist[y0 * DT + x0];
+    const b2 = dist[y0 * DT + x0 + 1];
+    const c = dist[(y0 + 1) * DT + x0];
+    const d = dist[(y0 + 1) * DT + x0 + 1];
+    return a + (b2 - a) * tx + (c - a) * ty + (a - b2 - c + d) * tx * ty;
+  };
   const interp = (arr, X, Y) => {
-    const fx = X / TILE - 0.5 - cx * CHUNK + 1;
-    const fy = Y / TILE - 0.5 - cy * CHUNK + 1;
+    const fx = X / TILE - 0.5 - tx0 + 1;
+    const fy = Y / TILE - 0.5 - ty0 + 1;
     const x0 = Math.max(0, Math.min(GT - 2, Math.floor(fx)));
     const y0 = Math.max(0, Math.min(GT - 2, Math.floor(fy)));
     const tx = fx - x0;
@@ -156,73 +291,118 @@ export function renderChunk(world, cx, cy, ov) {
     const d = arr[(y0 + 1) * GT + x0 + 1];
     return a + (b2 - a) * tx + (c - a) * ty + (a - b2 - c + d) * tx * ty;
   };
-  // Low-frequency patch noise varies slowly: sample it per 4×4 block.
+  // Slowly varying fields, sampled per 4×4 block.
   const BN = S >> 2;
   const lowLand = new Float32Array(BN * BN);
   const lowWater = new Float32Array(BN * BN);
+  const blkLit = new Float32Array(BN * BN);
+  const blkTree = new Float32Array(BN * BN);
+  const blkDepth = new Float32Array(BN * BN);
   for (let by = 0; by < BN; by++) {
     for (let bx = 0; bx < BN; bx++) {
       const X = cx * S + bx * 4 + 2;
       const Y = cy * S + by * 4 + 2;
-      lowLand[by * BN + bx] = valueNoise(X / 26, Y / 26, seed + 22);
-      lowWater[by * BN + bx] = valueNoise(X / 20, Y / 20, seed + 21);
+      const k = by * BN + bx;
+      lowLand[k] = valueNoise(X / 26, Y / 26, seed + 22);
+      lowWater[k] = valueNoise(X / 20, Y / 20, seed + 21);
+      blkLit[k] = interp(gLit, X, Y);
+      blkTree[k] = interp(gTree, X, Y);
+      blkDepth[k] = sampleDist((bx * 4 + 2) / TILE, (by * 4 + 2) / TILE);
+    }
+  }
+  // Tiles where shore effects can happen (land within reach of water or
+  // the other way round); everywhere else skips the neighbourhood tests.
+  const shoreTile = new Uint8Array(CHUNK * CHUNK);
+  for (let ty = 0; ty < CHUNK; ty++) {
+    for (let tx = 0; tx < CHUNK; tx++) {
+      let land = 0;
+      let water = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const x = tx0 + tx + dx;
+          const y = ty0 + ty + dy;
+          const bb = x < 0 || y < 0 || x >= W || y >= H ? B.DEEP : biome[y * W + x];
+          if (isWaterB(bb)) water = 1;
+          else land = 1;
+        }
+      }
+      const rv = nearRiver[(ty0 + ty - TY0) * TN + (tx0 + tx - TX0)];
+      shoreTile[ty * CHUNK + tx] = (land && water) || rv ? 1 : 0;
     }
   }
 
   for (let py = 0; py < S; py++) {
     const Y = cy * S + py;
+    const rowShore = (py >> 4) * CHUNK;
     for (let px = 0; px < S; px++) {
       const X = cx * S + px;
       const ci = (py + M) * SM + px + M;
       const b = cls[ci];
-      const pal = GROUND[b];
       const bay = BAYER4[(py & 3) * 4 + (px & 3)];
+      const blk = (py >> 2) * BN + (px >> 2);
+      const shore = shoreTile[rowShore + (px >> 4)];
       const r = hash3(X, Y, seed + 5) / 4294967296;
-      let col;
+      let out;
       if (isWaterB(b)) {
-        // Shore foam: distance to the nearest land pixel.
+        const kind = b === B.RIVER ? 'river' : b === B.LAKE ? 'lake' : 'sea';
+        const ramp = R.water[kind];
         let near = 9;
-        for (let dy = -2; dy <= 2 && near > 1; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
-            const nb = cls[ci + dy * SM + dx];
-            if (!isWaterB(nb)) {
-              const d = Math.max(Math.abs(dx), Math.abs(dy));
-              if (d < near) near = d;
+        if (shore) {
+          // Pixel distance to the nearest land pixel (foam, shallows).
+          for (let dy = -3; dy <= 3 && near > 1; dy++) {
+            for (let dx = -3; dx <= 3; dx++) {
+              if (!isWaterB(cls[ci + dy * SM + dx])) {
+                const d = Math.max(Math.abs(dx), Math.abs(dy));
+                if (d < near) near = d;
+              }
             }
           }
         }
-        if (near === 1) col = r < 0.75 ? FOAM : FOAM2;
-        else if (near === 2) col = r < 0.4 ? FOAM2 : pal.light;
+        if (near === 1) out = r < 0.72 ? R.foam : R.foam2;
+        else if (near === 2) out = r < 0.4 ? R.foam2 : ramp[0];
         else {
-          const low = lowWater[(py >> 2) * BN + (px >> 2)];
-          col = low > 0.35 + bay * 0.3 ? pal.base2 : pal.base;
-          if (r < 0.03) col = pal.dark;
+          const depth = blkDepth[blk];
+          let lv;
+          if (kind === 'river') lv = 1.2 + Math.min(2, depth) * 0.9;
+          else lv = Math.pow(Math.min(1, Math.max(0, (depth - 0.35) / 5.6)), 0.8) * 7.4;
+          if (near === 3) lv = Math.min(lv, 0.6);
+          // Gentle large-scale variation.
+          lv += (lowWater[blk] - 0.5) * 0.9;
+          let idx = Math.floor(lv + bay);
+          if (idx < 0) idx = 0;
+          else if (idx > 7) idx = 7;
+          out = ramp[idx];
           // Wave strokes: short light dashes on a staggered lattice.
           const wr = hash3(X >> 3, Y >> 2, seed + 9) & 63;
-          if (wr < 4 && (Y & 3) === 0 && ((X & 7) < 3)) col = pal.wave;
+          if (wr < 4 && (Y & 3) === 0 && (X & 7) < 3) out = r < 0.06 ? R.sparkle : R.waterLight[kind][idx];
         }
       } else {
-        const low = lowLand[(py >> 2) * BN + (px >> 2)];
-        col = low > 0.3 + bay * 0.45 ? pal.base2 : pal.base;
-        if (r < 0.045) col = pal.dark;
-        else if (r < 0.085) col = pal.light;
-        // Relief shading on rough ground.
-        if (b === B.HILLS || b === B.MOUNTAIN || b === B.PEAK || b === B.SNOW || b === B.TAIGA || b === B.ASH) {
-          const k = b === B.MOUNTAIN || b === B.PEAK ? 34 : 22;
-          const lit = interp(gLit, X, Y) * k;
-          if (lit > 0.25 + bay * 0.5) col = pal.light;
-          else if (lit < -0.25 - bay * 0.5) col = pal.dark;
-          if (b === B.MOUNTAIN && interp(gH, X, Y) > mountT + (peakT - mountT) * 0.65 + (bay - 0.5) * 0.02) col = r < 0.5 ? pal.snow : '#dfe7ef';
+        const rp = R.land[b];
+        const tone = lowLand[blk] > 0.3 + bay * 0.45 ? rp[1] : rp[0];
+        let lv = blkLit[blk] * RELIEF[b] - blkTree[blk] * SHADE[b];
+        if (r < 0.045) lv -= 1;
+        else if (r < 0.085) lv += 1;
+        let wet = 0;
+        if (shore) {
+          // Wet bank next to water: one dark pixel, then a softer one.
+          for (let k = 0; k < 4 && wet < 2; k++) {
+            const o = k === 0 ? 1 : k === 1 ? -1 : k === 2 ? SM : -SM;
+            if (isWaterB(cls[ci + o])) wet = 2;
+            else if (!wet && isWaterB(cls[ci + 2 * o])) wet = 1;
+          }
         }
-        // Wet edge next to water.
-        let wet = false;
-        for (let k = 0; k < 4 && !wet; k++) {
-          const nb = cls[ci + (k === 0 ? 1 : k === 1 ? -1 : k === 2 ? SM : -SM)];
-          if (isWaterB(nb)) wet = true;
+        if (wet && (b === B.BEACH || b === B.DESERT)) {
+          out = wet === 2 ? R.wet : bay < 0.6 ? (b === B.BEACH ? R.wet2 : R.wetDesert2) : tone[3];
+        } else {
+          if (wet) lv -= wet === 2 ? 2 : 1;
+          let idx = 3 + Math.floor(lv + bay);
+          if (idx < 0) idx = 0;
+          else if (idx > 6) idx = 6;
+          out = tone[idx];
+          if (b === B.MOUNTAIN && interp(gH, X, Y) > snowLine + (bay - 0.5) * 0.02) out = r < 0.5 ? R.snow : R.snow2;
         }
-        if (wet) col = b === B.BEACH || b === B.DESERT ? WET_SAND : pal.dark;
       }
-      buf[py * S + px] = pack(col);
+      buf[py * S + px] = out;
     }
   }
 
@@ -240,8 +420,6 @@ export function renderChunk(world, cx, cy, ov) {
   };
 
   // Per-tile ground details.
-  const tx0 = cx * CHUNK;
-  const ty0 = cy * CHUNK;
   for (let ty = ty0; ty < ty0 + CHUNK && ty < H; ty++) {
     for (let tx = tx0; tx < tx0 + CHUNK && tx < W; tx++) {
       const i = ty * W + tx;
@@ -280,8 +458,27 @@ export function renderChunk(world, cx, cy, ov) {
               setPx(x - 1, y, c);
               setPx(x + 1, y, c);
               setPx(x, y - 1, c);
-              setPx(x, y + 1, '#2f6a2c');
+              setPx(x, y + 1, pal.dark);
+              setPx(x, y, '#fbe9a8');
             }
+          }
+          if (b === B.FOREST && (h0 & 31) === 3) {
+            // A little toadstool.
+            const [x, y] = spot(4);
+            if (same(x, y)) {
+              setPx(x, y, '#efe3cc');
+              setPx(x - 1, y - 1, '#c4523e');
+              setPx(x, y - 1, '#e0705a');
+              setPx(x + 1, y - 1, '#c4523e');
+              setPx(x, y - 2, '#c4523e');
+            }
+          }
+          if ((b === B.FOREST || b === B.TAIGA) && (h0 & 7) === 5) {
+            // Fallen leaves / needles.
+            const [x, y] = spot(5);
+            const c = b === B.FOREST ? ((h0 >>> 9) & 1 ? '#c99a4a' : '#b9703e') : '#8a6a44';
+            setPx(x, y, c);
+            setPx(x + 2, y + 1, c);
           }
           if (b === B.TAIGA && (h0 & 7) === 0) {
             const [x, y] = spot(1);
@@ -292,7 +489,8 @@ export function renderChunk(world, cx, cy, ov) {
             const [x, y] = spot(2);
             setPx(x, y, pal.rock);
             setPx(x + 1, y, pal.rock);
-            setPx(x, y + 1, '#5e5f66');
+            setPx(x, y + 1, '#6c625f');
+            setPx(x + 1, y + 1, '#857a74');
           }
           break;
         }
@@ -300,12 +498,19 @@ export function renderChunk(world, cx, cy, ov) {
         case B.BEACH: {
           if ((h0 & 3) === 0) {
             const [x, y] = spot(0);
-            for (let d = 0; d < 4; d++) if (same(x + d, y)) setPx(x + d, y, pal.detail[0] === '#f5eedf' ? pal.dark : pal.detail[0]);
+            for (let d = 0; d < 4; d++) if (same(x + d, y)) setPx(x + d, y, b === B.BEACH ? pal.dark : pal.detail[0]);
+            for (let d = 1; d < 3; d++) if (same(x + d, y - 1)) setPx(x + d, y - 1, pal.light);
           }
           if ((h0 & 12) === 0) {
             const [x, y] = spot(1);
             setPx(x, y, pal.detail[1]);
             setPx(x + 1, y, pal.detail[1]);
+            setPx(x, y - 1, pal.light);
+          }
+          if (b === B.BEACH && (h0 & 48) === 16) {
+            const [x, y] = spot(2);
+            setPx(x, y, pal.detail[0]);
+            setPx(x + 1, y, '#e7b8a4');
           }
           break;
         }
@@ -329,20 +534,24 @@ export function renderChunk(world, cx, cy, ov) {
             for (let dy = -1; dy <= 1; dy++) {
               for (let dx = -3; dx <= 3; dx++) {
                 if (Math.abs(dx) === 3 && dy !== 0) continue;
-                if (same(x + dx, y + dy)) setPx(x + dx, y + dy, pal.puddle);
+                if (same(x + dx, y + dy)) setPx(x + dx, y + dy, dy === -1 && Math.abs(dx) < 3 ? pal.dark : pal.puddle);
               }
             }
-            setPx(x - 1, y - 1, pal.puddleLight);
-            setPx(x, y - 1, pal.puddleLight);
+            setPx(x - 1, y, pal.puddleLight);
+            setPx(x, y, pal.puddleLight);
           }
           const [x2, y2] = spot(2);
           setPx(x2, y2, pal.tuft);
           setPx(x2, y2 - 1, pal.tuft);
+          setPx(x2 + 1, y2, pal.dark);
           break;
         }
         case B.MOUNTAIN: {
           const [x, y] = spot(0);
-          for (let k = 0; k < 4; k++) setPx(x + k, y + (k >> 1), pal.crack);
+          for (let k = 0; k < 4; k++) {
+            setPx(x + k, y + (k >> 1), pal.crack);
+            setPx(x + k, y + (k >> 1) + 1, pal.light);
+          }
           break;
         }
         case B.ASH: {
@@ -372,34 +581,41 @@ export function renderChunk(world, cx, cy, ov) {
   }
   ctx.putImageData(img, 0, 0);
 
-  // Natural objects: shadows first, then sprites, in row order. Include a
-  // margin of tiles whose sprites overhang into this chunk.
+  // Natural objects. Include a margin of tiles whose sprites (up to ~2
+  // tiles wide, ~3 tall) or shadows overhang into this chunk.
   const objs = [];
-  for (let ty = ty0 - 1; ty < ty0 + CHUNK + 2; ty++) {
+  for (let ty = ty0 - 1; ty < ty0 + CHUNK + 3; ty++) {
     if (ty < 0 || ty >= H) continue;
-    for (let tx = tx0 - 1; tx < tx0 + CHUNK + 1; tx++) {
+    for (let tx = tx0 - 2; tx < tx0 + CHUNK + 2; tx++) {
       if (tx < 0 || tx >= W) continue;
       const i = ty * W + tx;
       const f = feature[i];
       if (!f || ov.cleared[i] || ov.road[i] || ov.ground[i]) continue;
+      const b = biome[i];
       const h0 = hash3(tx, ty, seed + 3);
-      const spr = featureSprite(f, h0 & 3);
+      const snowy = b === B.MOUNTAIN && height01[i] > snowLine;
+      const spr = natureSprite(f, h0, b, snowy);
       if (!spr) continue;
-      const jx = ((h0 >>> 4) % 7) - 3;
-      const jy = ((h0 >>> 8) % 5) - 3;
-      const ax = tx * TILE + 8 + jx - cx * S;
-      const ay = ty * TILE + 15 + jy - cy * S;
-      objs.push({ spr, ax, ay, f });
+      // Sub-tile jitter so stands of trees do not line up on the grid.
+      const jx = ((h0 >>> 17) % 11) - 5;
+      const jy = ((h0 >>> 21) % 7) - 4;
+      objs.push({ spr, ax: tx * TILE + 8 + jx - cx * S, ay: ty * TILE + 13 + jy - cy * S });
     }
   }
-  ctx.fillStyle = 'rgba(10,25,15,0.22)';
-  for (const o of objs) {
-    const sw = Math.max(6, Math.round(o.spr.w * 0.62 * o.spr.shadow));
-    ellipse(ctx, o.ax + 1, o.ay - 1, sw / 2, 2.2);
-  }
-  objs.sort((p, q) => p.ay - q.ay || p.ax - q.ax);
-  for (const o of objs) {
-    ctx.drawImage(o.spr.canvas, Math.round(o.ax - o.spr.w / 2), Math.round(o.ay - o.spr.h + 1));
+  if (objs.length) {
+    // Shadows go into one mask first, so overlapping ones do not stack up.
+    if (!maskCanvas || maskCanvas.width !== S) maskCanvas = makeCanvas(S, S);
+    const mctx = maskCanvas.getContext('2d');
+    mctx.clearRect(0, 0, S, S);
+    for (const o of objs) {
+      const c = o.spr.cast;
+      if (c) mctx.drawImage(c.canvas, o.ax + c.x, o.ay + c.y);
+    }
+    ctx.globalAlpha = SHADOW_ALPHA;
+    ctx.drawImage(maskCanvas, 0, 0);
+    ctx.globalAlpha = 1;
+    objs.sort((p, q) => p.ay - q.ay || p.ax - q.ax);
+    for (const o of objs) ctx.drawImage(o.spr.canvas, o.ax - o.spr.ax, o.ay - o.spr.ay);
   }
   return canvas;
 }
@@ -466,13 +682,6 @@ function riverWidthAt(world, X, Y, ux, uy) {
     }
   }
   return best;
-}
-
-function ellipse(ctx, cx, cy, rx, ry) {
-  for (let y = -Math.ceil(ry); y <= Math.ceil(ry); y++) {
-    const hw = Math.round(rx * Math.sqrt(Math.max(0, 1 - (y * y) / (ry * ry))));
-    if (hw > 0) ctx.fillRect(Math.round(cx - hw), Math.round(cy + y), hw * 2, 1);
-  }
 }
 
 function paintGround(setPx, tx, ty, g, crop, seed) {

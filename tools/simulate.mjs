@@ -5,7 +5,7 @@ import { Match } from '../engine/sim/match.js';
 import { TICK } from '../engine/sim/defs.js';
 
 const seed = Number(process.argv[2] ?? 3);
-const minutes = Number(process.argv[3] ?? 20);
+const minutes = Number(process.argv[3] ?? 30);
 const ais = Number(process.argv[4] ?? 10);
 const size = process.argv[5] ?? 'medium';
 const t0 = performance.now();
@@ -24,14 +24,16 @@ for (let i = 0; i < ticks; i++) {
   if (m.state.t - last >= 60) {
     last = m.state.t;
     const ps = [...m.state.players].sort((x, y) => y.tiles - x.tiles);
-    const line = ps.slice(0, 8).map((p) => `${p.name.slice(0, 8)}[${p.personality[0]}] ${((p.tiles / m.landTotal) * 100).toFixed(1)}% pop ${k(p.pop)}/${k(p.maxPop)} g${k(p.gold)}${p.alive ? '' : ' X'}`).join(' | ');
+    const line = ps.slice(0, 8).map((p) => `${p.name.slice(0, 8)}[${p.personality[0]}] ${((p.tiles / m.landTotal) * 100).toFixed(1)}% pop ${k(p.pop)}/${k(p.maxPop)} army ${k(m.army(p.id))} g${k(p.gold)}${p.alive ? '' : ' X'}`).join(' | ');
     const st = m.state;
-    console.log(`t=${Math.round(st.t / 60)}m alive ${ps.filter((p) => p.alive).length} atk ${st.attacks.length} boats ${st.boats.filter((b) => b.kind === 'transport').length}/${st.boats.length} towns ${st.structures.filter((s) => s.kind === 'town').length} ports ${st.structures.filter((s) => s.kind === 'port').length} outposts ${st.structures.filter((s) => s.kind === 'outpost').length} allies ${st.alliances.length} :: ${line}`);
+    const claimed = st.players.reduce((t, p) => t + p.tiles, 0) / m.landTotal;
+    console.log(`t=${Math.round(st.t / 60)}m alive ${ps.filter((p) => p.alive).length} claimed ${(claimed * 100).toFixed(0)}% squads ${st.squads.length} (${st.squads.filter((q) => q.fighting).length} fighting) ships ${st.boats.length} towns ${st.structures.filter((s) => s.kind === 'town').length} ports ${st.structures.filter((s) => s.kind === 'port').length} outposts ${st.structures.filter((s) => s.kind === 'outpost').length} allies ${st.alliances.length} :: ${line}`);
   }
 }
 const ms = performance.now() - t1;
 console.log(`simulated ${Math.round(m.state.t)}s in ${(ms / 1000).toFixed(1)}s real (${(ms / Math.max(1, m.state.tick)).toFixed(2)} ms/tick avg, worst ${worst.toFixed(0)} ms)`);
 const evs = m.state.events.filter((e) => e.kid === -1);
 for (const e of evs.slice(-25)) console.log(`  [${Math.round(e.t)}] ${e.text}`);
-for (const p of m.state.players) console.log(`  ${p.name}: ${p.alive ? 'alive' : 'fallen'}, best ${((p.stats.maxTiles / m.landTotal) * 100).toFixed(1)}%, attacks ${p.stats.attacks}, boats ${p.stats.boats}, trade ${Math.round(p.stats.trade)} gold, towns ${m.state.structures.filter((s) => s.owner === p.id && s.kind === 'town').map((s) => s.level).join(',')}`);
+for (const p of m.state.players) console.log(`  ${p.name}: ${p.alive ? 'alive' : 'fallen'}, best ${((p.stats.maxTiles / m.landTotal) * 100).toFixed(1)}%, raised ${p.stats.raised}, lost ${Math.round(p.stats.lostSoldiers)} soldiers, trade ${Math.round(p.stats.trade)} gold, towns ${m.state.structures.filter((s) => s.owner === p.id && s.kind === 'town').map((s) => s.level).join(',')}`);
+console.log('captures:', m.state.events.filter((e) => e.kind === 'fallen-town').length, 'falls:', m.state.events.filter((e) => e.kind === 'fall').length);
 console.log('winner:', JSON.stringify(m.state.winner), m.state.winner ? m.state.players[m.state.winner.kid].name : '');

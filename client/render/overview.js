@@ -2,38 +2,106 @@
 // territory fill and borders. Used when zoomed out and for the
 // minimap.
 
-import { BIOMES, B, D } from '../../engine/world/biomes.js';
+import { B, D, TREE_FEATURES, F } from '../../engine/world/biomes.js';
 import { rgb } from './color.js';
 import { makeCanvas } from './pix.js';
+
+// Average colours of painted chunks per biome (measured from renderChunk),
+// so the zoomed-out map and chunk placeholders match the pixel view:
+// [open ground, under trees, with rocks, with bushes/reeds/cacti].
+const LAND = {
+  [B.BEACH]: ['#dfc691', '#a99a62', '#cdb07f', '#cdb886'],
+  [B.GRASS]: ['#6f9049', '#577139', '#708450', '#5f7b41'],
+  [B.MEADOW]: ['#7c9a51', '#59733b', '#788b55', '#658045'],
+  [B.FOREST]: ['#57723d', '#5b753d', '#607547', '#57713e'],
+  [B.TAIGA]: ['#415940', '#38523b', '#485c48', '#415940'],
+  [B.MARSH]: ['#5e6a48', '#5d6a3a', '#5e6a48', '#5b643e'],
+  [B.DESERT]: ['#d2b47c', '#8f8053', '#bd9f70', '#999261'],
+  [B.HILLS]: ['#778851', '#55693d', '#767f57', '#637646'],
+  [B.MOUNTAIN]: ['#9a958f', '#596556', '#868280', '#86847a'],
+  [B.PEAK]: ['#d1d2ce', '#9aa29a', '#b8b9b5', '#b8b9b5'],
+  [B.SNOW]: ['#c6cdc9', '#758478', '#a9adaa', '#a9adaa'],
+  [B.ASH]: ['#443c45', '#3e343a', '#413941', '#413941'],
+};
+// Sea by distance to land (tiles), then lake and river.
+const SEA = ['#6ba09e', '#6ba09e', '#52939f', '#448495', '#3b768a', '#346a80', '#2d5c73'];
+const LAKE = ['#6a9f9b', '#5a9597', '#4f8a92', '#457e8b'];
+const RIVER = '#709e93';
+const SNOWCAP = '#dcdfd9';
+const ROCKS = new Set([F.ROCK, F.BOULDER, F.CRAG, F.ASHROCK]);
+
+/** Chamfer distance (tiles, capped) from every water tile to the nearest land. */
+function waterDepth(world) {
+  const { width: W, height: H, biome } = world;
+  const d = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) d[i] = biome[i] <= B.RIVER ? 99 : 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (!d[i]) continue;
+      let v = d[i];
+      if (x > 0) v = Math.min(v, d[i - 1] + 1);
+      if (y > 0) {
+        v = Math.min(v, d[i - W] + 1);
+        if (x > 0) v = Math.min(v, d[i - W - 1] + 1.41);
+        if (x < W - 1) v = Math.min(v, d[i - W + 1] + 1.41);
+      }
+      d[i] = v;
+    }
+  }
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = W - 1; x >= 0; x--) {
+      const i = y * W + x;
+      if (!d[i]) continue;
+      let v = d[i];
+      if (x < W - 1) v = Math.min(v, d[i + 1] + 1);
+      if (y < H - 1) {
+        v = Math.min(v, d[i + W] + 1);
+        if (x < W - 1) v = Math.min(v, d[i + W + 1] + 1.41);
+        if (x > 0) v = Math.min(v, d[i + W - 1] + 1.41);
+      }
+      d[i] = v;
+    }
+  }
+  return d;
+}
 
 export function buildTerrainOverview(world) {
   const { width: W, height: H, biome, height01, feature } = world;
   const cv = makeCanvas(W, H);
   const ctx = cv.getContext('2d');
   const img = ctx.createImageData(W, H);
-  const cols = BIOMES.map((b) => rgb(b.color));
+  const land = {};
+  for (const k of Object.keys(LAND)) land[k] = LAND[k].map((c) => rgb(c));
+  const sea = SEA.map((c) => rgb(c));
+  const lake = LAKE.map((c) => rgb(c));
+  const river = rgb(RIVER);
+  const snowcap = rgb(SNOWCAP);
+  const depth = waterDepth(world);
+  const th = world.thresholds;
+  const snowLine = th ? th.mountT + (th.peakT - th.mountT) * 0.65 : Infinity;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
       const b = biome[i];
-      let [r, g, bl] = cols[b];
-      if (b > B.RIVER) {
+      let r;
+      let g;
+      let bl;
+      if (b === B.RIVER) [r, g, bl] = river;
+      else if (b === B.LAKE) [r, g, bl] = lake[Math.min(3, Math.max(0, Math.round(depth[i] - 1)))];
+      else if (b <= B.RIVER) [r, g, bl] = sea[Math.min(6, Math.round(depth[i]))];
+      else {
+        const f = feature[i];
+        const set = land[b] || land[B.GRASS];
+        [r, g, bl] = set[TREE_FEATURES.has(f) ? 1 : ROCKS.has(f) ? 2 : f ? 3 : 0];
+        if (b === B.MOUNTAIN && height01[i] > snowLine && !TREE_FEATURES.has(f)) [r, g, bl] = snowcap;
+        // Relief: slopes facing the light (upper left) brighter.
         const up = y > 0 ? height01[i - W] : height01[i];
         const left = x > 0 ? height01[i - 1] : height01[i];
         const k = (Math.max(0, up) - Math.max(0, height01[i])) * 300 + (Math.max(0, left) - Math.max(0, height01[i])) * 200;
         r -= k;
         g -= k;
-        bl -= k;
-        if (feature[i] >= 1 && feature[i] <= 6) {
-          r *= 0.82;
-          g *= 0.86;
-          bl *= 0.82;
-        }
-      } else if (b === B.SEA || b === B.LAKE) {
-        // Lighter shallows near the shore.
-        r += 8;
-        g += 10;
-        bl += 8;
+        bl -= k * 0.9;
       }
       img.data[i * 4] = r;
       img.data[i * 4 + 1] = g;

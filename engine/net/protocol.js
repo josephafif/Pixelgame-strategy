@@ -1,10 +1,10 @@
 // Wire format shared by the server, the single-player worker and the client.
 // Players receive the full territory once, then only the tiles that changed
 // since their last snapshot; settlement layouts are sent when they change.
-// Gold and the troop slider are private; everything else is public.
+// Gold is private; everything else (soldiers included) is public.
 
 import { serializeLayout } from '../settlement/planner.js';
-import { STRUCTURE_KINDS, structureCost, upgradeCost, MAX_TOWN_LEVEL, RULES } from '../sim/defs.js';
+import { STRUCTURE_KINDS, structureCost, upgradeCost, MAX_TOWN_LEVEL, RULES, garrisonMax, guardRadius } from '../sim/defs.js';
 import { rle } from '../core/rle.js';
 
 export { rle, unrle } from '../core/rle.js';
@@ -57,7 +57,7 @@ function publicPlayer(m, p) {
     tiles: p.tiles,
     pop: Math.round(p.pop),
     maxPop: Math.round(p.maxPop),
-    troops: Math.round(m.troops(p)),
+    army: Math.round(m.army(p.id)),
     traitor: p.traitorUntil > m.state.t ? round(p.traitorUntil - m.state.t) : 0,
   };
 }
@@ -65,7 +65,7 @@ function publicPlayer(m, p) {
 function privatePlayer(m, p) {
   const costs = {};
   for (const k of STRUCTURE_KINDS) costs[k] = structureCost(k, p.built[k]);
-  return { gold: Math.floor(p.gold), goldRate: round(p.goldRate, 10), troopShare: p.troopShare, costs, stats: p.stats };
+  return { gold: Math.floor(p.gold), goldRate: round(p.goldRate, 10), upkeep: round(p.upkeep || 0, 10), costs, stats: p.stats };
 }
 
 /** The snapshot for player `kid` (kid = -1: spectator). */
@@ -78,13 +78,18 @@ export function snapshot(m, kid) {
     return o;
   });
   const structures = st.structures.map((s) => {
-    const o = { id: s.id, kind: s.kind, owner: s.owner, x: s.x, y: s.y, level: s.level, name: s.name, capital: s.capital, layoutV: s.layoutV };
+    const o = { id: s.id, kind: s.kind, owner: s.owner, x: s.x, y: s.y, level: s.level, name: s.name, capital: s.capital, layoutV: s.layoutV, garrison: Math.ceil(s.garrison), gmax: garrisonMax(s), guard: guardRadius(s) };
     if (s.owner === kid && s.kind === 'town' && s.level < MAX_TOWN_LEVEL) o.upgrade = upgradeCost(s.level);
     return o;
   });
   const boats = st.boats.map((b) => {
     const next = b.path[Math.min(b.path.length - 1, b.pi + 1)];
-    return { id: b.id, kind: b.kind, owner: b.owner, x: round(b.x, 100), y: round(b.y, 100), dir: (next % W) < (b.path[b.pi] % W) ? -1 : 1, troops: b.troops ? Math.round(b.troops) : undefined };
+    return { id: b.id, kind: b.kind, owner: b.owner, x: round(b.x, 100), y: round(b.y, 100), dir: (next % W) < (b.path[b.pi] % W) ? -1 : 1 };
+  });
+  const squads = st.squads.map((q) => {
+    const o = { id: q.id, owner: q.owner, type: q.type, n: Math.ceil(q.n), x: round(q.x, 100), y: round(q.y, 100), state: q.fighting ? 'fight' : q.state };
+    if (q.owner === kid || kid < 0) o.dest = q.dest;
+    return o;
   });
   return {
     t: 'snap',
@@ -96,7 +101,7 @@ export function snapshot(m, kid) {
     players,
     structures,
     boats,
-    attacks: st.attacks.map((a) => ({ id: a.id, from: a.from, to: a.to, troops: Math.round(a.troops), landing: a.landing })),
+    squads,
     alliances: st.alliances.map((a) => ({ a: a.a, b: a.b, until: round(a.until) })),
     requests: st.requests.filter((r) => r.to === kid || r.from === kid || kid < 0).map((r) => ({ id: r.id, from: r.from, to: r.to, until: round(r.until), renew: r.renew })),
     labels: st.survey?.labels || [],

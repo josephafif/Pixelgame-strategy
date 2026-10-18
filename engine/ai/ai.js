@@ -1,49 +1,350 @@
-// AI players. Once a second each one looks at the survey (who borders whom,
-// how much unclaimed land is next to it) and issues the same commands a
-// human would: expand into empty land, attack a weaker neighbour, build and
-// grow towns, ports and outposts, make and keep (or break) alliances.
-//
+// AI players. Once a second each one reads the survey (who borders whom,
+// how much unclaimed land is next to it) and the soldiers on the map, and
+// issues the same commands a human would:
+// - riders roam the empty land nearby to claim it;
+// - guards (spears and bows) stand by the towns and outposts that face the
+//   most dangerous neighbour, and reinforcements are raised where an enemy
+//   column is coming;
+// - when it has the upper hand, it marches a mixed army (with trebuchets)
+//   on the nearest town or outpost of its weakest rival;
+// - it builds and grows towns, ports and outposts, and makes, keeps or
+//   breaks alliances.
 // Three temperaments: builders grow and fortify, merchants trade and ally,
 // warlords keep a large army and look for prey.
 
-import { MAX_TOWN_LEVEL, structureCost, upgradeCost } from '../sim/defs.js';
+import { MAX_TOWN_LEVEL, UNITS, structureCost, upgradeCost } from '../sim/defs.js';
 import { buildCheck } from '../sim/structures.js';
+import { power as squadPower } from '../sim/units.js';
 
 const STYLE = {
-  builder: { share: 0.55, expandAt: 0.3, attackAt: 0.65, edge: 1.3, ratio: 0.35, trust: 0.6, towns: 1.2, ports: 0.7, outposts: 1 },
-  merchant: { share: 0.45, expandAt: 0.3, attackAt: 0.75, edge: 1.6, ratio: 0.3, trust: 0.85, towns: 1, ports: 1.6, outposts: 0.6 },
-  warlord: { share: 0.7, expandAt: 0.25, attackAt: 0.5, edge: 0.85, ratio: 0.45, trust: 0.35, towns: 0.8, ports: 0.4, outposts: 0.5 },
+  builder: { army: 0.45, edge: 1.4, trust: 0.6, towns: 1.2, ports: 0.7, outposts: 1, claimers: 1, guard: 0.7 },
+  merchant: { army: 0.35, edge: 1.7, trust: 0.85, towns: 1, ports: 1.6, outposts: 0.6, claimers: 1, guard: 0.6 },
+  warlord: { army: 0.65, edge: 1.05, trust: 0.35, towns: 0.8, ports: 0.4, outposts: 0.5, claimers: 1.2, guard: 0.5 },
 };
 
-// How hard the AI plays: how big an edge it wants before attacking, how full
-// its realm must be, and how much more it wants before turning on a human.
+// How hard the AI plays: how big an edge it wants before attacking, and how
+// much more before turning on a human, and how many AIs may march on the
+// same human at once.
 export const DIFFICULTY = {
-  easy: { edge: 1.6, attackAt: 0.15, human: 3, pile: 1 },
-  normal: { edge: 1, attackAt: 0, human: 1.6, pile: 2 },
-  hard: { edge: 0.85, attackAt: -0.05, human: 1.1, pile: 3 },
+  easy: { edge: 1.6, human: 2.5, pile: 1, army: 0.8 },
+  normal: { edge: 1, human: 1.5, pile: 2, army: 1 },
+  hard: { edge: 0.85, human: 1.1, pile: 3, army: 1.15 },
 };
 
 const DIR8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
 const xy = (m, i) => ({ x: i % m.W, y: (i / m.W) | 0 });
+const GARRISON_POWER = 7; // a garrison soldier, in squad power units
+const MAX_ORDERS = 4; // deploy and move orders per think (each finds a path)
+const MAX_SQUADS = 90;
 
 export function thinkAI(m, p) {
   const st = m.state;
   const sv = st.survey;
   if (!sv || !p.alive || st.phase !== 'running') return;
   const s = STYLE[p.personality] || STYLE.builder;
+  const D = DIFFICULTY[m.opts.difficulty] || DIFFICULTY.normal;
   const mem = p.ai_;
-  if (Math.abs(p.troopShare - s.share) > 0.01) m.exec(p.id, { type: 'troops', share: s.share });
+  mem.roles ||= {};
+  const ctx = { m, p, s, D, mem, orders: 0, mine: st.squads.filter((q) => q.owner === p.id) };
+  for (const id of Object.keys(mem.roles)) if (!ctx.mine.some((q) => q.id === Number(id))) delete mem.roles[id];
   for (const r of st.requests.filter((q) => q.to === p.id)) m.exec(p.id, { type: 'answer', id: r.id, accept: wantsAlly(m, p, r.from, s) });
   diplomacy(m, p, s, mem);
-  spend(m, p, s);
-  fight(m, p, s, mem);
+  const threat = defend(ctx);
+  if (!threat) spend(m, p, s);
+  claimLand(ctx);
+  guard(ctx);
+  attack(ctx);
 }
 
+/** Army strength of a player: soldiers in the field plus garrisons. */
 function power(m, q) {
-  return m.troops(q);
+  let n = 0;
+  for (const sq of m.state.squads) if (sq.owner === q.id) n += squadPower(sq);
+  for (const s of m.state.structures) if (s.owner === q.id) n += s.garrison * GARRISON_POWER;
+  return n;
 }
 
-/** Near the end, the other big realm stands between p and victory: no peace with it. */
+function order(ctx, cmd) {
+  if (ctx.orders >= MAX_ORDERS) return { error: 'busy' };
+  ctx.orders++;
+  return ctx.m.exec(ctx.p.id, cmd);
+}
+
+function idle(ctx, role) {
+  return ctx.mine.filter((q) => (ctx.mem.roles[q.id] || 'guard') === role && q.state === 'idle' && !q.fighting);
+}
+
+/** Raise n soldiers of a type toward (x, y) and give them a role. */
+function raise(ctx, unit, n, x, y, role) {
+  const { p } = ctx;
+  n = Math.min(n, Math.floor(p.gold / UNITS[unit].cost), 200);
+  // Few, sizeable squads: easier to read on the map, cheaper to simulate.
+  if (n < (unit === 'trebuchet' ? 1 : 5) || ctx.mine.length >= MAX_SQUADS) return false;
+  const r = order(ctx, { type: 'deploy', unit, n, x, y });
+  if (r.ok) ctx.mem.roles[r.id] = role;
+  return !!r.ok;
+}
+
+/** Hostile soldiers on our land or marching on one of our places: help and raise more there. */
+function defend(ctx) {
+  const { m, p, mine } = ctx;
+  const st = m.state;
+  // Hostile soldiers on our land or marching on one of our places.
+  const [bx0, by0, bx1, by1] = p.bbox;
+  const foes = st.squads.filter((q) => {
+    if (q.owner === p.id || q.x < bx0 - 14 || q.y < by0 - 14 || q.x > bx1 + 14 || q.y > by1 + 14 || m.allied(p.id, q.owner)) return false;
+    return m.owner[m.idx(Math.round(q.x), Math.round(q.y))] === p.id || !!q.dest;
+  });
+  if (!foes.length) return false;
+  let worst = null;
+  for (const s of st.structures) {
+    if (s.owner !== p.id) continue;
+    let foe = 0;
+    for (const q of foes) {
+      if (Math.hypot(q.x - s.x, q.y - s.y) >= 14) continue;
+      const onOurs = m.owner[m.idx(Math.round(q.x), Math.round(q.y))] === p.id;
+      const coming = q.dest && Math.hypot(q.dest[0] - s.x, q.dest[1] - s.y) < 12;
+      if (onOurs || coming) foe += squadPower(q);
+    }
+    if (!foe) continue;
+    let own = s.garrison * GARRISON_POWER;
+    for (const q of mine) if (Math.hypot(q.x - s.x, q.y - s.y) < 14) own += squadPower(q);
+    const gap = foe * 1.2 - own;
+    if (gap > 0 && (!worst || gap > worst.gap)) worst = { s, gap };
+  }
+  if (!worst) return false;
+  const { s } = worst;
+  // Idle guards nearby come to help.
+  const helpers = mine.filter((q) => q.state === 'idle' && (ctx.mem.roles[q.id] || 'guard') === 'guard' && Math.hypot(q.x - s.x, q.y - s.y) < 40 && Math.hypot(q.x - s.x, q.y - s.y) > 4);
+  if (helpers.length) order(ctx, { type: 'move', ids: helpers.slice(0, 10).map((q) => q.id), x: s.x, y: s.y });
+  // Fresh spears and bows come from the nearest place that is not under siege.
+  const need = Math.ceil(worst.gap / 10);
+  const budget = p.gold * 0.8;
+  raise(ctx, 'shield', Math.min(need, Math.floor((budget * 0.6) / UNITS.shield.cost)), s.x, s.y, 'guard');
+  raise(ctx, 'bow', Math.min(Math.ceil(need / 2), Math.floor((budget * 0.4) / UNITS.bow.cost)), s.x, s.y, 'guard');
+  return true;
+}
+
+/** An unclaimed land tile within reach of (x, y), sampled. */
+function emptyLandNear(m, x, y, r0, r1) {
+  for (let k = 0; k < 40; k++) {
+    const a = m.rng.next() * Math.PI * 2;
+    const d = r0 + m.rng.next() * (r1 - r0);
+    const tx = Math.round(x + Math.cos(a) * d);
+    const ty = Math.round(y + Math.sin(a) * d);
+    if (tx < 2 || ty < 2 || tx >= m.W - 2 || ty >= m.H - 2) continue;
+    const i = m.idx(tx, ty);
+    if (m.land[i] && m.owner[i] === -1) return { x: tx, y: ty };
+  }
+  return null;
+}
+
+/** Riders roam the empty land nearby; more are raised while there is land to take. */
+function claimLand(ctx) {
+  const { m, p, s, mine } = ctx;
+  const sv = m.state.survey;
+  const [neutral, nTile] = sv.neutral[p.id] || [0, -1];
+  for (const q of idle(ctx, 'claim')) {
+    const spot = emptyLandNear(m, q.x, q.y, 6, 30) || (nTile >= 0 ? xy(m, nTile) : null);
+    if (spot) order(ctx, { type: 'move', ids: [q.id], x: spot.x, y: spot.y });
+    else ctx.mem.roles[q.id] = 'guard';
+  }
+  if (neutral <= 0 || nTile < 0) return;
+  const claimers = mine.filter((q) => ctx.mem.roles[q.id] === 'claim').length;
+  const want = Math.min(6, Math.round((1.5 + p.tiles / 1500) * s.claimers));
+  if (claimers < want && p.gold > UNITS.rider.cost * 6) {
+    const at = xy(m, nTile);
+    raise(ctx, 'rider', 6 + Math.min(6, Math.floor(p.gold / 400)), at.x, at.y, 'claim');
+  }
+}
+
+/** A few guards stand at the places nearest the most dangerous neighbour. */
+function guard(ctx) {
+  const { m, p, s, D, mine, mem } = ctx;
+  const st = m.state;
+  if (st.t - (mem.guardAt ?? -99) < 15 || p.gold < 150) return;
+  const contacts = (st.survey.contacts[p.id] || []).filter(([q]) => !m.allied(p.id, q) && st.players[q].alive);
+  if (!contacts.length) return;
+  let worst = null;
+  for (const c of contacts) {
+    let pw = 0;
+    for (const q of st.squads) if (q.owner === c[0]) pw += squadPower(q);
+    if (!worst || pw > worst.pw) worst = { c, pw };
+  }
+  const guards = mine.filter((q) => (mem.roles[q.id] || 'guard') === 'guard');
+  const have = guards.reduce((t, q) => t + squadPower(q), 0);
+  if (have >= worst.pw * s.guard * D.army * 0.35) return;
+  mem.guardAt = st.t;
+  // The own place nearest to that neighbour's border; guards stand on it.
+  const at = xy(m, worst.c[2]);
+  let post = null;
+  for (const b of st.structures) {
+    if (b.owner !== p.id) continue;
+    const d = Math.hypot(b.x - at.x, b.y - at.y);
+    if (!post || d < post.d) post = { b, d };
+  }
+  if (!post) return;
+  const spend = p.gold * 0.4;
+  raise(ctx, 'shield', Math.floor((spend * 0.55) / UNITS.shield.cost), post.b.x, post.b.y + 1, 'guard');
+  raise(ctx, 'bow', Math.floor((spend * 0.45) / UNITS.bow.cost), post.b.x, post.b.y + 1, 'guard');
+}
+
+/** Their place nearest to ours, and what defends it. */
+function nearestTarget(m, p, q) {
+  const st = m.state;
+  let target = null;
+  for (const a of st.structures) {
+    if (a.owner !== q) continue;
+    for (const b of st.structures) {
+      if (b.owner !== p.id) continue;
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (!target || d < target.d) target = { a, d };
+    }
+  }
+  if (!target) return null;
+  let defence = target.a.garrison * GARRISON_POWER;
+  for (const sq of st.squads) if (sq.owner === q && Math.hypot(sq.x - target.a.x, sq.y - target.a.y) < 16) defence += squadPower(sq);
+  return { s: target.a, d: target.d, defence };
+}
+
+/**
+ * Campaigns: pick the rival place we can best take, gather the army out of
+ * reach of its towers, go in together, then on to the next place.
+ */
+function attack(ctx) {
+  const { m, p, s, D, mem, mine } = ctx;
+  const st = m.state;
+  const sv = st.survey;
+  const [neutral] = sv.neutral[p.id] || [0];
+  let plan = mem.plan;
+  if (plan) {
+    const target = st.structures.find((q) => q.id === plan.sid);
+    const won = target && target.owner === p.id;
+    const over = !target || (!won && target.owner !== plan.to) || !st.players[plan.to].alive || m.allied(p.id, plan.to) || st.t - plan.since > (plan.phase === 'assault' ? 150 : 210);
+    if (won && st.players[plan.to].alive && !m.allied(p.id, plan.to)) {
+      // Taken: carry on to their next place, from here.
+      const next = nearestTarget(m, p, plan.to);
+      if (next && next.d < 120) {
+        plan = mem.plan = { to: plan.to, sid: next.s.id, since: st.t, waves: 0, phase: 'gather' };
+      } else plan = mem.plan = null;
+    } else if (over) {
+      plan = mem.plan = null;
+      for (const q of mine) if (mem.roles[q.id] === 'strike') mem.roles[q.id] = 'guard';
+    }
+  }
+  if (!plan) {
+    // Empty land first, unless war is the whole point.
+    const open = 1 - st.players.reduce((t, o) => t + o.tiles, 0) / m.landTotal;
+    if (neutral > 30 && open > 0.08 && p.personality !== 'warlord') return;
+    if (p.pop / Math.max(1, p.maxPop) < 0.4) return;
+    // What we could field: soldiers not busy claiming, plus what the treasury buys.
+    let field = p.gold * 0.8;
+    for (const q of mine) if (mem.roles[q.id] !== 'claim') field += squadPower(q) * 0.6;
+    const near = (sv.contacts[p.id] || []).map((c) => c[0]);
+    // An island realm looks across the water.
+    const rivals = near.length ? near : st.players.filter((o) => o.id !== p.id && o.alive).map((o) => o.id);
+    let best = null;
+    for (const q of rivals) {
+      const o = st.players[q];
+      if (!o.alive || m.allied(p.id, q)) continue;
+      if (!o.ai && st.players.filter((a) => a.ai && a.id !== p.id && a.ai_?.plan?.to === q).length >= D.pile) continue;
+      const t = nearestTarget(m, p, q);
+      if (!t || t.d > 220) continue;
+      let edge = field / Math.max(50, t.defence) / (D.edge * (o.ai ? 1 : D.human));
+      if (o.traitorUntil > st.t) edge *= 1.5;
+      edge /= 1 + t.d / 200; // far targets are worth less
+      if (!best || edge > best.edge) best = { q, edge, t };
+    }
+    if (!best || best.edge < s.edge * 1.3) return;
+    plan = mem.plan = { to: best.q, sid: best.t.s.id, since: st.t, waves: 0, phase: 'gather' };
+    m.event(best.q, 'warning', `${p.name} is marching on ${best.t.s.name}.`, best.t.s.x, best.t.s.y);
+  }
+  const target = st.structures.find((q) => q.id === plan.sid);
+  if (!plan.stage) {
+    // A gathering point eleven tiles out from the target, on our side.
+    let home = null;
+    for (const b of st.structures) {
+      if (b.owner !== p.id) continue;
+      const d = Math.hypot(b.x - target.x, b.y - target.y);
+      if (!home || d < home.d) home = { b, d };
+    }
+    if (!home) return;
+    const dx = home.b.x - target.x;
+    const dy = home.b.y - target.y;
+    const len = Math.max(1, Math.hypot(dx, dy));
+    const back = Math.min(len, 11);
+    plan.stage = [Math.round(target.x + (dx / len) * back), Math.round(target.y + (dy / len) * back)];
+  }
+  // All but a few guards join the campaign.
+  const guards = mine.filter((q) => (mem.roles[q.id] || 'guard') === 'guard' && q.state === 'idle');
+  for (const q of guards.slice(3)) mem.roles[q.id] = 'strike';
+  const strike = mine.filter((q) => mem.roles[q.id] === 'strike');
+  const [sx, sy] = plan.stage;
+  if (plan.phase === 'gather') {
+    const ready = strike.filter((q) => Math.hypot(q.x - sx, q.y - sy) < 7).reduce((t, q) => t + squadPower(q), 0);
+    const t = nearestTarget(m, p, plan.to);
+    const defence = t && t.s.id === target.id ? t.defence : target.garrison * GARRISON_POWER;
+    const waited = st.t - plan.since;
+    if (ready > defence * 1.4 || (waited > 90 && ready > defence) || (waited > 150 && ready > defence * 0.6)) {
+      plan.phase = 'assault';
+      plan.since = st.t;
+    } else {
+      const away = strike.filter((q) => q.state === 'idle' && Math.hypot(q.x - sx, q.y - sy) >= 7);
+      if (away.length) order(ctx, { type: 'move', ids: away.map((q) => q.id), x: sx, y: sy });
+    }
+  }
+  if (plan.phase === 'assault') {
+    // Everyone to the gate; trebuchets stop within their reach by themselves.
+    const go = strike.filter((q) => q.state === 'idle' && !q.fighting && Math.hypot(q.x - target.x, q.y - target.y) > 1.5);
+    if (go.length) order(ctx, { type: 'move', ids: go.map((q) => q.id), x: target.x, y: target.y });
+  }
+  // Fresh waves while the treasury allows.
+  const wave = 200 * s.army * D.army;
+  if (p.gold < wave) return;
+  plan.waves++;
+  const g = p.gold * 0.85;
+  const [wx, wy] = plan.phase === 'assault' ? [target.x, target.y] : plan.stage;
+  if (target.garrison > 15 && !strike.some((q) => q.type === 'trebuchet')) raise(ctx, 'trebuchet', Math.max(1, Math.min(4, Math.floor((g * 0.2) / UNITS.trebuchet.cost))), wx, wy, 'strike');
+  raise(ctx, 'shield', Math.floor((g * 0.35) / UNITS.shield.cost), wx, wy, 'strike');
+  raise(ctx, 'bow', Math.floor((g * 0.25) / UNITS.bow.cost), wx, wy, 'strike');
+  raise(ctx, p.gold > 900 ? 'knight' : 'rider', Math.floor((g * 0.2) / (p.gold > 900 ? UNITS.knight.cost : UNITS.rider.cost)), wx, wy, 'strike');
+}
+
+/** Towns, upgrades, ports and outposts, keeping gold for the army. */
+function spend(m, p, s) {
+  const st = m.state;
+  const own = st.structures.filter((q) => q.owner === p.id);
+  const towns = own.filter((q) => q.kind === 'town');
+  const ports = own.filter((q) => q.kind === 'port');
+  const outposts = own.filter((q) => q.kind === 'outpost');
+  const keep = 120 * s.army;
+  const wantTowns = 1 + Math.floor((p.tiles / 700) * s.towns);
+  const townCost = structureCost('town', p.built.town);
+  if (towns.length < wantTowns && p.gold >= townCost + keep) {
+    const spot = findSpot(m, p, 'town', 5);
+    if (spot && m.exec(p.id, { type: 'build', kind: 'town', x: spot.x, y: spot.y }).ok) return;
+  }
+  const low = towns.filter((q) => q.level < MAX_TOWN_LEVEL).sort((a, b) => a.level - b.level || (b.capital ? 1 : 0) - (a.capital ? 1 : 0))[0];
+  if (low && p.gold >= upgradeCost(low.level) + keep && (towns.length >= wantTowns || p.gold >= upgradeCost(low.level) + townCost)) {
+    if (m.exec(p.id, { type: 'upgrade', sid: low.id }).ok) return;
+  }
+  const portCost = structureCost('port', p.built.port);
+  const coast = st.survey.coast[p.id] || 0;
+  if (coast > 10 && ports.length < Math.min(3, Math.floor(s.ports * (1 + towns.length / 3))) && p.gold >= portCost + keep) {
+    const spot = findSpot(m, p, 'port', 2);
+    if (spot && m.exec(p.id, { type: 'build', kind: 'port', x: spot.x, y: spot.y }).ok) return;
+  }
+  // Outposts face the most dangerous neighbour.
+  const threat = (st.survey.contacts[p.id] || [])
+    .filter(([q]) => !m.allied(p.id, q) && st.players[q].alive)
+    .sort((a, b) => power(m, st.players[b[0]]) - power(m, st.players[a[0]]))[0];
+  if (threat && outposts.length < Math.ceil(towns.length * s.outposts) && p.gold >= structureCost('outpost', p.built.outpost) + keep) {
+    const at = xy(m, threat[2]);
+    const spot = nearOwn(m, p, at.x, at.y, 9);
+    if (spot) m.exec(p.id, { type: 'build', kind: 'outpost', x: spot.x, y: spot.y });
+  }
+}
+
 function endgameRival(m, p, q) {
   return p.tiles + q.tiles > m.landTotal * 0.6 && q.tiles > m.landTotal * 0.15 && p.tiles > m.landTotal * 0.15;
 }
@@ -54,12 +355,13 @@ function wantsAlly(m, p, qid, s) {
   const q = st.players[qid];
   if (!q.alive || q.traitorUntil > st.t || endgameRival(m, p, q)) return false;
   const allies = st.alliances.filter((a) => a.a === p.id || a.b === p.id).length;
-  if (allies >= 3 && !m.allied(p.id, qid)) return false;
+  if (allies >= (p.personality === 'merchant' ? 2 : 1) && !m.allied(p.id, qid)) return false;
   const ratio = power(m, q) / Math.max(1, power(m, p));
   // Strong neighbours are better friends than enemies; weak ones are prey for warlords.
   const borders = (st.survey.contacts[p.id] || []).some(([o]) => o === qid);
   if (borders && ratio < 0.5 && p.personality === 'warlord') return false;
-  return ratio > 1 - s.trust || m.noise(qid * 131 + p.id, Math.floor(st.t / 60)) < s.trust * 0.5;
+  // Peace with someone clearly stronger; merchants also with equals.
+  return ratio > 1.5 - s.trust * 0.6 || (p.personality === 'merchant' && ratio > 0.8 && m.noise(qid * 131 + p.id, Math.floor(st.t / 60)) < 0.5)
 }
 
 function diplomacy(m, p, s, mem) {
@@ -92,40 +394,6 @@ function diplomacy(m, p, s, mem) {
       mem.asked[q] = st.t;
       m.exec(p.id, { type: 'ally', to: q });
     }
-  }
-}
-
-function spend(m, p, s) {
-  const st = m.state;
-  const own = st.structures.filter((q) => q.owner === p.id);
-  const towns = own.filter((q) => q.kind === 'town');
-  const ports = own.filter((q) => q.kind === 'port');
-  const outposts = own.filter((q) => q.kind === 'outpost');
-  const wantTowns = 1 + Math.floor((p.tiles / 650) * s.towns);
-  const townCost = structureCost('town', p.built.town);
-  if (towns.length < wantTowns && p.gold >= townCost) {
-    const spot = findSpot(m, p, 'town', 5);
-    if (spot && m.exec(p.id, { type: 'build', kind: 'town', x: spot.x, y: spot.y }).ok) return;
-  }
-  const low = towns.filter((q) => q.level < MAX_TOWN_LEVEL).sort((a, b) => a.level - b.level || (b.capital ? 1 : 0) - (a.capital ? 1 : 0))[0];
-  // Grow towns when another town is not due, or when there is gold for both.
-  if (low && p.gold >= upgradeCost(low.level) && (towns.length >= wantTowns || p.gold >= upgradeCost(low.level) + townCost)) {
-    if (m.exec(p.id, { type: 'upgrade', sid: low.id }).ok) return;
-  }
-  const portCost = structureCost('port', p.built.port);
-  const coast = st.survey.coast[p.id] || 0;
-  if (coast > 10 && ports.length < Math.min(3, Math.floor(s.ports * (1 + towns.length / 3))) && p.gold >= portCost) {
-    const spot = findSpot(m, p, 'port', 2);
-    if (spot && m.exec(p.id, { type: 'build', kind: 'port', x: spot.x, y: spot.y }).ok) return;
-  }
-  // Outposts face the most dangerous neighbour.
-  const threat = (st.survey.contacts[p.id] || [])
-    .filter(([q]) => !m.allied(p.id, q) && st.players[q].alive)
-    .sort((a, b) => power(m, st.players[b[0]]) - power(m, st.players[a[0]]))[0];
-  if (threat && power(m, st.players[threat[0]]) > power(m, p) * 0.8 && outposts.length < Math.ceil(towns.length * s.outposts) && p.gold >= structureCost('outpost', p.built.outpost)) {
-    const at = xy(m, threat[2]);
-    const spot = nearOwn(m, p, at.x, at.y, 7);
-    if (spot) m.exec(p.id, { type: 'build', kind: 'outpost', x: spot.x, y: spot.y });
   }
 }
 
@@ -200,75 +468,6 @@ function nearOwn(m, p, x, y, r) {
       if (d < 3 || (best && d >= best.d)) continue;
       if (buildCheck(m, p.id, 'outpost', nx, ny).error) continue;
       best = { x: nx, y: ny, d };
-    }
-  }
-  return best;
-}
-
-function fight(m, p, s, mem) {
-  const st = m.state;
-  const sv = st.survey;
-  const fill = p.pop / Math.max(1, p.maxPop);
-  const mine = st.attacks.filter((a) => a.from === p.id);
-  const incoming = st.attacks.filter((a) => a.to === p.id);
-  const pressed = incoming.reduce((t, a) => t + a.troops, 0) > power(m, p) * 0.3;
-  // Unclaimed land first: it is cheap and the race for it is on.
-  const [neutral, nTile] = sv.neutral[p.id] || [0, -1];
-  if (neutral > 0 && nTile >= 0 && fill > s.expandAt && !mine.some((a) => a.to < 0 && !a.landing)) {
-    const at = xy(m, nTile);
-    m.exec(p.id, { type: 'attack', x: at.x, y: at.y, ratio: neutral > 40 ? s.ratio : s.ratio * 0.6 });
-    return;
-  }
-  const D = DIFFICULTY[m.opts.difficulty] || DIFFICULTY.normal;
-  if ((pressed && fill < 0.85) || fill < s.attackAt + D.attackAt) return;
-  // The weakest rival along the border, weighed by how much of it we share.
-  let best = null;
-  for (const [q, len, tile] of sv.contacts[p.id] || []) {
-    const o = st.players[q];
-    if (!o.alive || m.allied(p.id, q)) continue;
-    // Humans are not ganged up on: only a few AIs may attack one at a time.
-    if (!o.ai && st.attacks.filter((a) => a.to === q && a.from !== p.id && st.players[a.from].ai).length >= D.pile) continue;
-    let edge = power(m, p) / Math.max(1, power(m, o)) / (D.edge * (o.ai ? 1 : D.human));
-    if (o.traitorUntil > st.t) edge *= 1.6;
-    const score = edge * (1 + Math.min(1, len / 200) * 0.5);
-    if (!best || score > best.score) best = { q, tile, edge, score };
-  }
-  if (best && best.edge >= s.edge && mine.filter((a) => a.to >= 0).length < 2) {
-    const at = xy(m, best.tile);
-    m.exec(p.id, { type: 'attack', x: at.x, y: at.y, ratio: s.ratio });
-    return;
-  }
-  // Nothing to take by land: look across the water.
-  const boating = st.boats.some((b) => b.owner === p.id && b.kind === 'transport');
-  if ((sv.coast[p.id] || 0) > 0 && fill > Math.max(0.6, s.attackAt) && !boating && st.t - (mem.boatAt ?? -999) > 20) {
-    mem.boatAt = st.t;
-    const target = shoreTarget(m, p, s, D);
-    if (target >= 0) {
-      const at = xy(m, target);
-      m.exec(p.id, { type: 'boat', x: at.x, y: at.y, ratio: s.ratio });
-    }
-  }
-}
-
-/** A shore worth landing on: empty land first, then weak rivals. */
-function shoreTarget(m, p, s, D) {
-  const st = m.state;
-  const [x0, y0, x1, y1] = p.bbox;
-  const cx = (x0 + x1) / 2;
-  const cy = (y0 + y1) / 2;
-  let best = -1;
-  let bestScore = -Infinity;
-  for (let k = 0; k < 60 && m.coastTiles.length; k++) {
-    const i = m.coastTiles[m.rng.int(0, m.coastTiles.length - 1)];
-    const o = m.owner[i];
-    if (o === p.id || (o >= 0 && (m.allied(p.id, o) || !st.players[o].alive))) continue;
-    const q = o >= 0 ? st.players[o] : null;
-    let value = !q ? 2 : (power(m, p) / Math.max(1, power(m, q)) / (D.edge * (q.ai ? 1 : D.human))) * (p.personality === 'warlord' ? 1 : 0.5);
-    if (o >= 0 && value < s.edge) continue;
-    value -= Math.hypot((i % m.W) - cx, ((i / m.W) | 0) - cy) / 150;
-    if (value > bestScore) {
-      bestScore = value;
-      best = i;
     }
   }
   return best;

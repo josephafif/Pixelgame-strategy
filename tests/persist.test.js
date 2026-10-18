@@ -18,19 +18,20 @@ function aiMatch() {
 
 test('a saved match loads and continues exactly as the original', { timeout: 120000 }, () => {
   const a = aiMatch();
-  run(a, 40);
+  run(a, 120);
   // A pending human command must survive the save too.
-  a.command(0, { type: 'troops', share: 0.3 });
+  const h = a.state.structures.find((s) => s.owner === 0);
+  a.command(0, { type: 'deploy', unit: 'knight', n: 2, x: h.x + 3, y: h.y + 1 });
   const text = JSON.stringify(saveMatch(a));
   const b = loadMatch(JSON.parse(text), { world: WORLD });
   assert.equal(JSON.stringify(saveMatch(b)), text, 'identical right after loading');
   run(a, 1);
   run(b, 1);
-  assert.equal(b.state.players[0].troopShare, 0.3);
+  assert.ok(b.state.squads.some((q) => q.owner === 0 && q.type === 'knight'), 'the queued order went through');
   run(a, 180);
   run(b, 180);
   assert.equal(JSON.stringify(saveMatch(b)), JSON.stringify(saveMatch(a)), 'identical after three more minutes');
-  assert.ok(a.state.attacks.length + a.state.players.reduce((t, p) => t + p.stats.attacks, 0) > 5, 'the saved match had a war going on');
+  assert.ok(a.state.players.reduce((t, p) => t + p.stats.lost, 0) > 20, 'the saved match had a war going on');
   assert.deepEqual([...b.owner], [...a.owner], 'same territory');
   for (const s of b.state.structures) assert.ok(validateLayout(b.world, b.layouts.get(s.id)).ok, `${s.name} layout valid after load`);
 });

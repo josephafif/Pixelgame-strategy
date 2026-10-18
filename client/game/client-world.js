@@ -30,7 +30,8 @@ export class ClientWorld {
     this.prevSnap = null;
     this.snapAt = 0;
     this.snapGap = 200;
-    this.dirtyChunks = new Set();
+    this.dirtyChunks = new Set(); // full-size chunk pictures to repaint
+    this.lowDirty = new Set(); // quarter-size ones
     this.layerDirty = new Set();
     this.terrAll = true; // repaint the whole territory image
     this.terrTiles = []; // or just these tiles
@@ -50,7 +51,10 @@ export class ClientWorld {
 
   markArea(x0, y0, x1, y1) {
     for (let cy = Math.floor((y0 - 1) / CHUNK); cy <= Math.floor((y1 + 1) / CHUNK); cy++) {
-      for (let cx = Math.floor((x0 - 1) / CHUNK); cx <= Math.floor((x1 + 1) / CHUNK); cx++) this.dirtyChunks.add(`${cx},${cy}`);
+      for (let cx = Math.floor((x0 - 1) / CHUNK); cx <= Math.floor((x1 + 1) / CHUNK); cx++) {
+        this.dirtyChunks.add(`${cx},${cy}`);
+        this.lowDirty.add(`${cx},${cy}`);
+      }
     }
   }
 
@@ -87,6 +91,9 @@ export class ClientWorld {
         this.snapAt = now;
         this.players = msg.players;
         this.byId = new Map(msg.structures.map((s) => [s.id, s]));
+        // Where each squad was, so the renderer can move it smoothly.
+        this.prevSquads = this.squadsById || new Map();
+        this.squadsById = new Map(msg.squads.map((q) => [q.id, q]));
         // A structure that changed hands needs its banners repainted.
         if (this.prevSnap) {
           const before = new Map(this.prevSnap.structures.map((s) => [s.id, s.owner]));
@@ -144,6 +151,30 @@ export class ClientWorld {
 
   alliance(a, b) {
     return this.snap?.alliances.find((q) => (q.a === a && q.b === b) || (q.a === b && q.b === a)) || null;
+  }
+
+  squad(id) {
+    return this.squadsById?.get(id) || null;
+  }
+
+  /** Squad position between the last two snapshots. */
+  squadPos(q, now) {
+    const p = this.prevSquads?.get(q.id);
+    if (!p) return q;
+    const t = Math.min(1, (now - this.snapAt) / this.snapGap);
+    return { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t };
+  }
+
+  /** Own squads near a map point (for taps). */
+  squadAt(x, y, r = 1.6, owner = this.you) {
+    if (!this.snap) return null;
+    let best = null;
+    for (const q of this.snap.squads) {
+      if (owner !== null && q.owner !== owner) continue;
+      const d = Math.hypot(q.x - x, q.y - y);
+      if (d <= r && (!best || d < best.d)) best = { q, d };
+    }
+    return best ? best.q : null;
   }
 
   /** The structure nearest (x, y) within r tiles. */

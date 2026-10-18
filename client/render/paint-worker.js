@@ -17,6 +17,16 @@ function applyPatch(p) {
   }
 }
 
+/** A smaller copy of a canvas, as an ImageBitmap. */
+function shrink(cv, k) {
+  const out = new OffscreenCanvas(Math.max(1, Math.round(cv.width / k)), Math.max(1, Math.round(cv.height / k)));
+  const g = out.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'medium';
+  g.drawImage(cv, 0, 0, out.width, out.height);
+  return out.transferToImageBitmap();
+}
+
 self.addEventListener('message', (e) => {
   const m = e.data;
   if (m.t === 'world') {
@@ -29,20 +39,21 @@ self.addEventListener('message', (e) => {
     if (m.t === 'chunk') {
       applyPatch(m.patch);
       const cv = renderChunk(world, m.cx, m.cy, ov);
-      // A half-size copy for the zoomed-out end of the pixel view: a quarter
-      // of the pixels to sample every frame.
-      const small = new OffscreenCanvas(cv.width >> 1, cv.height >> 1);
-      const g = small.getContext('2d');
-      g.imageSmoothingEnabled = true;
-      g.imageSmoothingQuality = 'medium';
-      g.drawImage(cv, 0, 0, small.width, small.height);
-      const half = small.transferToImageBitmap();
+      // Smaller copies for zoomed-out views: half size for the far end of the
+      // close-up view, quarter size (4 px per tile) for the whole map.
+      const low = shrink(cv, 4);
+      if (m.lowOnly) {
+        self.postMessage({ key: m.key, low }, [low]);
+        return;
+      }
+      const half = shrink(cv, 2);
       const bmp = cv.transferToImageBitmap();
-      self.postMessage({ key: m.key, bmp, half }, [bmp, half]);
+      self.postMessage({ key: m.key, bmp, half, low }, [bmp, half, low]);
     } else if (m.t === 'layer') {
       const r = renderSettlementLayer(world, m.L, { color: m.color });
+      const low = shrink(r.canvas, 4);
       const bmp = r.canvas.transferToImageBitmap();
-      self.postMessage({ key: m.key, bmp, px: r.px, py: r.py, v: m.v, color: m.color }, [bmp]);
+      self.postMessage({ key: m.key, bmp, low, px: r.px, py: r.py, v: m.v, color: m.color }, [bmp, low]);
     }
   } catch (err) {
     self.postMessage({ key: m.key, error: String(err && err.stack ? err.stack : err) });

@@ -87,9 +87,10 @@ test('two players join a room, choose where to start and share one authoritative
     // Private data only reaches its owner.
     const meA = runA.players[ia.you];
     const otherA = runA.players[ib.you];
-    assert.ok(meA.gold !== undefined && meA.troopShare !== undefined);
+    assert.ok(meA.gold !== undefined && meA.upkeep !== undefined);
     assert.equal(otherA.gold, undefined, 'no peeking at rivals');
-    assert.ok(otherA.troops > 0, 'troops are public');
+    assert.ok(otherA.army > 0, 'army sizes are public');
+    assert.ok(runA.squads.some((q) => q.owner === ib.you), 'so are the soldiers on the map');
     assert.ok(runB.players[ib.you].gold !== undefined);
 
     // Bulk data arrives: territory, layouts for the starting town.
@@ -107,9 +108,9 @@ test('two players join a room, choose where to start and share one authoritative
     const errSnap = await a.wait((m) => m.t === 'snap' && (m.events || []).some((e) => e.kind === 'error'));
     assert.ok(errSnap.events.some((e) => /own land|costs/i.test(e.text)));
     // A valid command changes authoritative state, visible to its owner.
-    a.send({ t: 'cmd', cmd: { type: 'troops', share: 0.25 } });
-    const moved = await a.wait((m) => m.t === 'snap' && m.players[ia.you].troopShare === 0.25);
-    assert.ok(moved);
+    a.send({ t: 'cmd', cmd: { type: 'deploy', unit: 'knight', n: 2, x: capA.x + 3, y: capA.y + 1 } });
+    const raised = await a.wait((m) => m.t === 'snap' && m.squads.some((q) => q.owner === ia.you && q.type === 'knight'));
+    assert.ok(raised);
     // Nobody can give orders to another player's town.
     b.send({ t: 'cmd', cmd: { type: 'upgrade', sid: capA.id } });
     const refused = await b.wait((m) => m.t === 'snap' && (m.events || []).some((e) => /Not your town/.test(e.text)));

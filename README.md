@@ -1,13 +1,14 @@
 # Realmwright
 
 A real-time multiplayer strategy game about land. Every tile of the map belongs to someone or to
-nobody. Your people grow with the land you hold, your troops push your borders outward, and the towns
-you build grow on their own into procedurally generated pixel-art cities. Rivals can be humans or AIs,
-and they all play by the same rules. The first realm to hold 80% of the land wins, usually within
-10–20 minutes.
+nobody. You raise soldiers of five kinds, march them where you want them and they hold the land they
+stand on; the towns you build grow on their own into procedurally generated pixel-art cities, with
+villagers chopping wood, quarrying stone, farming and carrying goods. Rivals can be humans or AIs, and
+they all play by the same rules. The first realm to hold 80% of the land wins; otherwise the one with the
+most land when time runs out (30 minutes by default).
 
-The way it plays is inspired by [OpenFront](https://openfront.io). It shares no code, art or numbers
-with it.
+The map-wide race for land is inspired by [OpenFront](https://openfront.io), raising troops by dropping
+them on the map by Clash of Clans. It shares no code, art or numbers with either.
 
 Realmwright is a new, independent project. It uses [Pixelgame](https://github.com/josephafif/Pixelgame)
 only as a *visual* reference: pixel scale, palettes and the look of terrain and vegetation. It shares no
@@ -36,39 +37,63 @@ Open <http://localhost:8080> in a browser.
 
 ## Playing
 
-- **Start.** Tap open land to choose where your realm begins. You get a patch of land around a hamlet.
-- **People and troops.** The more land and the bigger your towns, the more people you can have. The
-  *Troops* slider sets how many of them are under arms; the rest work and earn gold.
-- **Attack** by tapping land. Unclaimed land is cheap. A rival's land costs more, and more still in
-  forests, hills and mountains or near an outpost. The *Attack* slider sets the share of your troops
-  each attack sends. Your border pushes outward like a wave until the troops are spent, and what is
-  left comes home. ✕ calls an attack off.
-- **Boats.** A tap on a shore across the water sends a boat with troops (three at a time). They land
-  and attack from the beach.
+- **Start.** Tap open land to choose where your realm begins. You get a patch of land around a hamlet
+  and a small army at its gate.
+- **People and gold.** The more land and the bigger your towns, the more people you can have, and
+  people earn gold. Soldiers cost gold to raise and a little upkeep while they live; an empty treasury
+  makes them desert.
+- **Raise soldiers like dropping troops.** Pick a realm to march on (🎯 in the army bar, or tap their
+  land), pick a kind of soldier, then tap where they should go. They are raised at your nearest town,
+  port or outpost and march there. The bulk button (×5, ×10, ×25 … ×200) sets how many each tap sends, and holding
+  your finger (or mouse button) down keeps sending. A besieged town cannot raise soldiers.
+- **Soldiers hold the ground they stand on.** Standing soldiers claim the land around them: unclaimed
+  land quickly, a rival's land only where none of their soldiers stand and no town or outpost guards
+  it. Soldiers only fight where they stand until you send them on.
+- **Kinds of soldiers** (gold each):
+
+  | Soldier | Cost | Good at |
+  | --- | --- | --- |
+  | Shieldbearers | 10 | cheap and sturdy; stop horsemen |
+  | Longbows | 14 | shoot from afar; beat shields |
+  | Outriders | 22 | fast horsemen; claim land quickly, run down archers and siege engines |
+  | Knights | 45 | strong all round, costly |
+  | Trebuchets | 120 | slow; break garrisons and walls from afar |
+
+  Forests and hills give cover. Soldiers sent across water take to boats at the shore.
+- **Towns fall** when their garrison is gone and enemy soldiers reach the gate. Garrisons fire on
+  attackers and refill slowly when no enemy is near. A realm that has lost every town, port and outpost
+  has a minute to take one back.
 - **Build** with gold:
   - *towns* bring more people and gold, grow by themselves, and can be raised to village, town and
-    walled city;
+    walled city (a bigger garrison each time);
   - *ports* send trade ships to other players' ports, and both sides earn gold;
-  - *outposts* make the land around them much harder to take.
-- **Alliances.** Long-press (or right-click) a realm to ask for an alliance. Allies cannot attack each
-  other and earn more from trade. An alliance lasts five minutes and can be renewed. Whoever breaks one
-  is a traitor for a minute, and their land is easier to take.
+  - *outposts* have a garrison and are a place to raise soldiers near the front.
+- **Alliances.** Long-press (or right-click) a realm to ask for an alliance. Allies neither fight nor
+  take each other's land and earn more from trade. An alliance lasts five minutes and can be renewed.
+  Whoever breaks one is a traitor for a minute.
 - **No fog of war.** Everyone sees the whole map.
 - **Victory:** hold 80% of all land, be the last realm standing, or hold the most land when time runs
   out.
-- **AI rivals** are builders, merchants or warlords. They play easy, normal or hard. On easy and
-  normal they want a bigger edge before they turn on a human, and only one or two of them attack the
-  same human at a time.
+- **AI rivals** are builders, merchants or warlords. They play easy, normal or hard. They gather an
+  army at a staging point before they march on a town, keep guards at home and send riders to claim
+  open land.
+- **Map sizes:** small (320×224), medium, large (576×400, the default) and huge (768×544, up to 24 AI
+  rivals).
 
-**Screen:** your land share, people (the bar under it shows how close you are to your limit), troops
-and gold at the top left. The clock, speed, leaderboard and menu are at the top right. Requests and
-incoming attacks appear as small notices under the top bar. The bottom bar holds the two sliders and
-the three build buttons. Your attacks under way show just above it.
+**Screen:** your land share, people (the bar under it shows how close you are to your limit), soldiers
+and gold (with income after upkeep) at the top left. The clock, speed, leaderboard and menu are at the
+top right. The army bar at the bottom holds the target realm, the bulk size, the three build buttons and
+a card for each kind of soldier. Selected soldiers show just above it.
 
-**Controls:** drag to pan, wheel or pinch to zoom (it glides and settles on a sharp scale), click or tap
-to attack, right-click or long-press for a small menu (alliances, boats, building on that spot,
-growing a town). Double-tap zooms in. Keys: H home, B/P/O build town/port/outpost, Q/E attack share,
-+/- zoom, WASD pan, Space pause, 1/2/3 speed (single player), Esc menu.
+**Controls:**
+
+- *Mouse:* left click selects soldiers, left drag draws a selection box (Shift adds), right click sends
+  the selected soldiers (or opens a small menu), right or middle drag pans, the wheel zooms.
+- *Touch:* drag pans, pinch zooms, tap selects soldiers or sends the selected ones, hold and drag
+  selects several, hold for a small menu, double tap zooms in.
+- *Keys:* 1–5 pick a soldier (0 none), Q/E bulk size, T target, F select every soldier, X halt, H home,
+  B/P/O build town/port/outpost, WASD or arrows pan, +/- zoom, Space pause, `,`/`.` speed (single
+  player), Esc menu.
 
 ## Development
 
@@ -77,7 +102,7 @@ npm test                  # unit, simulation, persistence and multiplayer tests 
 npm run lint              # ESLint (fetched with npx; flat config in eslint.config.js)
 npm run check             # both
 
-npm run simulate -- 3 20 10 medium         # headless AI match: seed, minutes, AIs, size
+npm run simulate -- 3 20 10 medium         # headless AI match: seed, minutes, AIs, size (small … huge)
 npm run preview:world -- 7 medium out.png  # world overview PNG
 npm run preview:settlement -- 1 0 40 3 out.png   # grow a settlement at a start site, write a PNG
 node tools/play.mjs shots 7 small 60       # drive the real client in headless Chromium
@@ -92,7 +117,10 @@ Debug pages (served by `npm start`):
 
 - `/client/debug/terrain.html?seed=7&size=small`: generated worlds;
 - `/client/debug/settlements.html`: settlement growth in every style;
-- `/client/debug/sprites.html?scale=2&kinds=keep,house&levels=1,2,3&styles=stone,adobe`: building sprites.
+- `/client/debug/sprites.html?scale=2&kinds=keep,house&levels=1,2,3&styles=stone,adobe`: building sprites;
+- `/client/debug/nature.html`: tree and rock variants in every biome;
+- `/client/debug/biomes.html`: ground tiles and palettes;
+- `/client/debug/people.html`: soldiers (all kinds, walk and fight frames) and villagers at work.
 
 The browser tools use Playwright with a preinstalled Chromium. They look for `playwright` in
 `node_modules` first, then in the global install.
@@ -104,7 +132,8 @@ engine/   shared, deterministic game logic (no DOM, no Node APIs); runs on the s
   core/        RNG and hashing, noise, heap, grid search (A*, flood), RLE
   world/       world generation, biomes, start sites, names
   settlement/  road-first settlement planner, building kinds, styles, local terrain, validator
-  sim/         Match (territory, people, ticks), attacks, boats and trade, towns, alliances, commands, saves
+  sim/         Match (territory, people, ticks), units (squads, paths, combat, claiming), territory,
+               towns and garrisons, trade ships, alliances, commands, saves
   ai/          AI players (the same commands as humans)
   net/         wire protocol: per-player snapshots and territory deltas (gold stays private)
 server/   HTTP static server, WebSocket server (RFC 6455), rooms and lobby, save store

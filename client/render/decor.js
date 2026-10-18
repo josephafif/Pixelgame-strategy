@@ -27,26 +27,26 @@ export function decorSprite(kind, color = '#c83a3a', style = 'farm') {
     const by = 20; // ground line
     switch (kind) {
       case 'well': {
-        p.ellipse(9, by - 3, 6, 3.2, (dx, dy) => (dy < -0.2 ? '#6c6b72' : '#9d9ca4'));
-        p.ellipse(9, by - 4, 4, 2, '#2d4a78');
+        p.ellipse(9, by - 3, 6, 3.2, (dx, dy) => (dy < -0.2 ? '#716a67' : '#a39d97'));
+        p.ellipse(9, by - 4, 4, 2, '#2f5a6e');
         p.vline(4, by - 13, by - 4, '#6f5030');
         p.vline(14, by - 13, by - 4, '#6f5030');
         for (let x = 3; x <= 15; x++) p.set(x, by - 14, '#a8452f');
         for (let x = 4; x <= 14; x++) p.set(x, by - 15, '#c0573c');
-        p.vline(9, by - 13, by - 7, '#8a8a90');
+        p.vline(9, by - 13, by - 7, '#8f8a86');
         p.rect(8, by - 8, 3, 2, '#7a5632');
         break;
       }
       case 'fountain': {
-        p.ellipse(9, by - 3, 8, 3.6, (dx, dy) => (dy < 0 ? '#8d8c94' : '#b2b1b8'));
-        p.ellipse(9, by - 4, 6.5, 2.4, '#4a86c8');
-        p.rect(8, by - 11, 3, 8, '#b2b1b8');
-        p.ellipse(9, by - 11, 3, 1.4, '#9d9ca4');
-        p.set(9, by - 14, '#cfe6f5');
-        p.set(8, by - 13, '#cfe6f5');
-        p.set(10, by - 13, '#cfe6f5');
-        p.set(6, by - 6, '#cfe6f5');
-        p.set(12, by - 6, '#cfe6f5');
+        p.ellipse(9, by - 3, 8, 3.6, (dx, dy) => (dy < 0 ? '#948d88' : '#b8b1a9'));
+        p.ellipse(9, by - 4, 6.5, 2.4, '#5094a8');
+        p.rect(8, by - 11, 3, 8, '#b8b1a9');
+        p.ellipse(9, by - 11, 3, 1.4, '#a39d97');
+        p.set(9, by - 14, '#d6efe9');
+        p.set(8, by - 13, '#d6efe9');
+        p.set(10, by - 13, '#d6efe9');
+        p.set(6, by - 6, '#d6efe9');
+        p.set(12, by - 6, '#d6efe9');
         break;
       }
       case 'stall': {
@@ -76,9 +76,9 @@ export function decorSprite(kind, color = '#c83a3a', style = 'farm') {
         break;
       case 'stones':
         for (const [x, y, w] of [[4, by - 4, 5], [10, by - 4, 5], [7, by - 8, 5]]) {
-          p.rect(x, y, w, 4, '#9d9ca4');
-          p.hline(x, x + w - 1, y, '#c4c3ca');
-          p.vline(x + w - 1, y, y + 3, '#77767f');
+          p.rect(x, y, w, 4, '#a39d97');
+          p.hline(x, x + w - 1, y, '#c9c2b8');
+          p.vline(x + w - 1, y, y + 3, '#7c7570');
         }
         break;
       case 'crystals':
@@ -95,7 +95,7 @@ export function decorSprite(kind, color = '#c83a3a', style = 'farm') {
         p.ellipse(5, by - 2, 2, 2, '#4a3a2a');
         p.ellipse(12, by - 2, 2, 2, '#4a3a2a');
         p.line(14, by - 5, 17, by - 3, '#6f5030');
-        p.rect(5, by - 9, 6, 2, '#9d9ca4');
+        p.rect(5, by - 9, 6, 2, '#a39d97');
         break;
       case 'charcoal':
         p.ellipse(9, by - 3, 6, 3.5, (dx, dy) => (dy < -0.3 ? '#4a4450' : '#2a262f'));
@@ -127,10 +127,10 @@ export function decorSprite(kind, color = '#c83a3a', style = 'farm') {
         }
         break;
       case 'anvil':
-        p.rect(5, by - 6, 9, 3, '#5a5a62');
-        p.hline(5, 13, by - 6, '#8a8a92');
-        p.rect(7, by - 3, 5, 3, '#4a4a52');
-        p.rect(3, by - 5, 2, 2, '#5a5a62');
+        p.rect(5, by - 6, 9, 3, '#5e5856');
+        p.hline(5, 13, by - 6, '#8f8a86');
+        p.rect(7, by - 3, 5, 3, '#4e4846');
+        p.rect(3, by - 5, 2, 2, '#5e5856');
         break;
       case 'dummy':
         p.vline(9, by - 14, by, '#6f5030');
@@ -142,13 +142,13 @@ export function decorSprite(kind, color = '#c83a3a', style = 'farm') {
         p.hline(3, 15, by - 8, '#6f5030');
         p.hline(3, 15, by - 2, '#6f5030');
         for (let x = 4; x < 15; x += 3) {
-          p.vline(x, by - 15, by - 1, '#8a8a92');
-          p.set(x, by - 16, '#c4c3ca');
+          p.vline(x, by - 15, by - 1, '#8f8a86');
+          p.set(x, by - 16, '#c9c2b8');
         }
         break;
       case 'trough':
         p.rect(3, by - 4, 13, 4, '#8f6a3e');
-        p.hline(4, 14, by - 4, '#4a86c8');
+        p.hline(4, 14, by - 4, '#5094a8');
         break;
       case 'herbbed':
         p.rect(2, by - 4, 14, 4, '#6a4a2e');
@@ -176,8 +176,8 @@ export function decorSprite(kind, color = '#c83a3a', style = 'farm') {
         p.set(9, by - 9, '#ff8a3a');
         break;
       case 'lamp':
-        p.vline(9, by - 14, by, '#3a3a40');
-        p.rect(7, by - 17, 5, 4, '#3a3a40');
+        p.vline(9, by - 14, by, '#3e3836');
+        p.rect(7, by - 17, 5, 4, '#3e3836');
         p.rect(8, by - 16, 3, 2, '#ffe08a');
         break;
       default:
@@ -201,7 +201,7 @@ export function wallSprite(level, n, e, s, w, tower, style) {
     const ox = 1;
     const by = 32; // bottom of tile in sprite
     const H = level === 1 ? 12 : level === 2 ? 14 : 17;
-    const stone = style === 'adobe' ? ['#d3ad78', '#b48c5c', '#e6c694', '#a07c50'] : style === 'ash' ? ['#4a4450', '#35303a', '#5e5866', '#2a262f'] : ['#9a99a2', '#77767f', '#b5b4bc', '#66656e'];
+    const stone = style === 'adobe' ? ['#d3ad78', '#b48c5c', '#e6c694', '#a07c50'] : style === 'ash' ? ['#4a4450', '#35303a', '#5e5866', '#2a262f'] : ['#a19b95', '#7c7570', '#bcb5ac', '#69615e'];
     const [base, dark, light, mortar] = stone;
     if (level === 1) {
       // Palisade: sharpened stakes.
@@ -259,11 +259,11 @@ export function wallSprite(level, n, e, s, w, tower, style) {
         p.set(ox + x, by - tH - 1, col[2]);
         p.set(ox + x, by - tH - 2, col[2]);
       }
-      p.rect(ox + 7, by - tH + 6, 2, 3, '#26222a');
+      p.rect(ox + 7, by - tH + 6, 2, 3, '#2a2226');
       if (level === 3) {
         for (let y = by - tH - 9; y < by - tH - 2; y++) {
           const half = Math.round(((y - (by - tH - 9)) / 7) * 7);
-          for (let x = 8 - half; x <= 7 + half; x++) p.set(ox + x, y, x < 8 ? '#5577b0' : '#3f5f9e');
+          for (let x = 8 - half; x <= 7 + half; x++) p.set(ox + x, y, x < 8 ? '#62759a' : '#4d6088');
         }
       }
     }
@@ -278,7 +278,7 @@ export function gateSprite(level, horizontal, style) {
     const p = new Pix(18, 36);
     const ox = 1;
     const by = 34;
-    const stone = style === 'adobe' ? ['#d3ad78', '#b48c5c', '#e6c694'] : style === 'ash' ? ['#4a4450', '#35303a', '#5e5866'] : ['#9a99a2', '#77767f', '#b5b4bc'];
+    const stone = style === 'adobe' ? ['#d3ad78', '#b48c5c', '#e6c694'] : style === 'ash' ? ['#4a4450', '#35303a', '#5e5866'] : ['#a19b95', '#7c7570', '#bcb5ac'];
     const col = level === 1 ? ['#8f6a3e', '#6f5030', '#c49a62'] : stone;
     const H = level === 1 ? 16 : level === 2 ? 20 : 24;
     if (horizontal) {
@@ -360,22 +360,22 @@ export function soldierSprite(kind, color, frame = 0) {
       p.set(12, 6, '#5a3e24');
       p.rect(5, 4 + bob, 4, 5, color);
       p.rect(5, 1 + bob, 4, 3, skin);
-      p.hline(5, 8, 1 + bob, '#8a8a92');
-      p.vline(10, 0, 9, '#c4c3ca');
+      p.hline(5, 8, 1 + bob, '#8f8a86');
+      p.vline(10, 0, 9, '#c9c2b8');
     } else if (kind === 'siege') {
       p.rect(2, 9, 10, 3, '#8f6a3e');
       p.ellipse(4, 13, 2, 2, '#4a3a2a');
       p.ellipse(10, 13, 2, 2, '#4a3a2a');
       p.line(4, 9, 11, 2, '#6f5030');
-      p.ellipse(11, 2, 1.6, 1.6, '#77767f');
+      p.ellipse(11, 2, 1.6, 1.6, '#7c7570');
       p.set(7, 8, color);
       p.set(8, 8, color);
     } else {
       p.rect(5, 6 + bob, 4, 5, kind === 'militia' ? '#8a7a5a' : color);
       p.hline(5, 8, 8 + bob, shade(kind === 'militia' ? '#8a7a5a' : color, -0.3));
       p.rect(5, 3 + bob, 4, 3, skin);
-      p.hline(5, 8, 2 + bob, kind === 'militia' ? '#6a4a2e' : '#8a8a92');
-      p.hline(5, 8, 3 + bob, kind === 'militia' ? '#6a4a2e' : '#a7a7af');
+      p.hline(5, 8, 2 + bob, kind === 'militia' ? '#6a4a2e' : '#8f8a86');
+      p.hline(5, 8, 3 + bob, kind === 'militia' ? '#6a4a2e' : '#aca69f');
       p.vline(5, 11 + bob, 14, '#4a3a2a');
       p.vline(8, 11 + bob, 14, '#4a3a2a');
       if (kind === 'arch') {
@@ -384,7 +384,7 @@ export function soldierSprite(kind, color, frame = 0) {
         p.vline(10, 3, 11, '#e8e0c8');
       } else {
         p.vline(10, 0 + bob, 13, '#8f6a3e');
-        p.set(10, 0 + bob, '#c4c3ca');
+        p.set(10, 0 + bob, '#c9c2b8');
         p.rect(2, 7 + bob, 3, 4, shade(color, -0.15));
       }
     }

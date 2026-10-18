@@ -43,19 +43,19 @@ await page.evaluate(() => {
 await page.waitForFunction(() => window.__realm.cw.snap.phase === 'running', null, { timeout: 30000 });
 await page.waitForTimeout(2500);
 await page.screenshot({ path: `${out}/03-start.png` });
-// Play a little: claim the land around, and keep expanding while time passes.
+// Play a little: send riders onto the unclaimed land beyond the border while time passes.
 const expand = () => page.evaluate(() => {
   const { cw, transport } = window.__realm;
   for (let i = 0; i < cw.owner.length; i++) {
-    if (cw.owner[i] === -1 && cw.land[i] && (cw.owner[i + 1] === cw.you || cw.owner[i - 1] === cw.you)) {
-      transport.command({ type: 'attack', x: i % cw.W, y: (i / cw.W) | 0, ratio: 0.4 });
+    if (cw.owner[i] === -1 && cw.land[i] && (cw.owner[i + 6] === cw.you || cw.owner[i - 6] === cw.you)) {
+      transport.command({ type: 'deploy', unit: 'rider', n: 5, x: i % cw.W, y: (i / cw.W) | 0 });
       return;
     }
   }
 });
 await expand();
 await page.waitForTimeout(1500);
-await page.screenshot({ path: `${out}/03b-attack.png` });
+await page.screenshot({ path: `${out}/03b-riders.png` });
 await page.evaluate(() => window.__realm.transport.setSpeed(8));
 const t0 = Date.now();
 while (Date.now() - t0 < Number(secs) * 1000) {
@@ -68,7 +68,7 @@ await page.screenshot({ path: `${out}/04-later.png` });
 await page.evaluate(() => { window.__realm.renderer.zoomTo(3); });
 await page.waitForTimeout(1200);
 await page.screenshot({ path: `${out}/05-strategic.png` });
-const info = await page.evaluate(() => { const cw = window.__realm.cw; return { t: cw.snap.time, tiles: cw.me.tiles, pop: cw.me.pop, troops: cw.me.troops, gold: cw.me.gold, alive: cw.me.alive, chunks: window.__realm.renderer.chunks.size }; });
+const info = await page.evaluate(() => { const cw = window.__realm.cw; return { t: cw.snap.time, tiles: cw.me.tiles, pop: cw.me.pop, army: cw.me.army, gold: cw.me.gold, alive: cw.me.alive, chunks: window.__realm.renderer.chunks.size }; });
 console.log(JSON.stringify(info), 'errors', errors.length);
 await browser.close();
 server.close();

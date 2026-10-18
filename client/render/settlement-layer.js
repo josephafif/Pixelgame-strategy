@@ -212,7 +212,7 @@ export function renderSettlementLayer(world, L, { color = '#c83a3a' } = {}) {
       items.push({ y: (y + 1) * TILE - 1, x: x * TILE, draw: () => ctx.drawImage(spr.canvas, x * TILE - 1 - PX, (y + 1) * TILE - 1 - 34 - PY) });
     }
   }
-  ctx.fillStyle = 'rgba(20,20,30,0.28)';
+  ctx.fillStyle = 'rgba(43,29,38,0.3)';
   for (const it of items) if (it.shadow) shadowRect(ctx, ...it.shadow);
   items.sort((a, b) => a.y - b.y || a.x - b.x);
   for (const it of items) it.draw();

@@ -1,8 +1,9 @@
 // The authoritative match. Every land tile has an owner (a player or
-// nobody). Players grow people with the land they hold, put a share of them
-// under arms, and send troops to push their borders into unclaimed land or
-// into a rival's realm. Towns, ports and outposts are the only buildings;
-// towns grow on their own as pixel-art settlements laid out by the planner.
+// nobody). Players grow people with the land and towns they hold; gold and
+// people raise squads of soldiers that march out from towns and outposts,
+// claim the land they stand on and fight anyone who is not an ally. Towns,
+// ports and outposts are the only buildings; towns grow on their own as
+// pixel-art settlements laid out by the planner.
 //
 // The same class runs on the multiplayer server and in the single-player
 // worker; clients only ever see snapshots.
@@ -15,7 +16,8 @@ import { kingdomNames } from '../world/names.js';
 import { B, isOpenWater } from '../world/biomes.js';
 import { occupiedWorldCells } from '../settlement/planner.js';
 import { TICK, RULES, TOWN_LEVELS } from './defs.js';
-import * as attacks from './attack.js';
+import * as units from './units.js';
+import * as territory from './territory.js';
 import * as naval from './naval.js';
 import * as diplomacy from './diplomacy.js';
 import * as structures from './structures.js';
@@ -56,7 +58,7 @@ export class Match {
   constructor(opts = {}) {
     const seed = opts.seed ?? 1;
     const size = opts.size || 'medium';
-    this.opts = { placementTime: 20, timeLimit: 20 * 60, difficulty: 'normal', ...opts, seed, size };
+    this.opts = { placementTime: 20, timeLimit: 30 * 60, difficulty: 'normal', ...opts, seed, size };
     const dims = WORLD_SIZES[size] || WORLD_SIZES.medium;
     this.world = opts.world || generateWorld({ seed, ...dims });
     this.rng = new Rng(seed ^ 0x5eed);
@@ -89,7 +91,7 @@ export class Match {
       placementLeft: this.opts.placementTime,
       players: [],
       structures: [],
-      attacks: [],
+      squads: [],
       boats: [],
       alliances: [],
       requests: [],
@@ -113,17 +115,14 @@ export class Match {
       alive: true,
       spawned: false,
       pop: 0,
-      troops: 0,
-      workers: 0,
       maxPop: 0,
       tiles: 0,
       gold: 0,
       goldRate: 0,
-      troopShare: RULES.troopShare,
       built: { town: 0, port: 0, outpost: 0 },
       traitorUntil: 0,
       bbox: [W_BIG, W_BIG, -1, -1],
-      stats: { maxTiles: 0, taken: 0, lost: 0, boats: 0, trade: 0, attacks: 0 },
+      stats: { maxTiles: 0, taken: 0, lost: 0, trade: 0, raised: 0, lostSoldiers: 0 },
       ai_: {},
     };
   }
@@ -165,7 +164,7 @@ export class Match {
       }
       this.waterSize.push(size);
     }
-    // Coastal land: the largest water body next to it (boats and ports need one).
+    // Coastal land: the largest water body next to it (ports need one).
     this.coast = new Int32Array(n).fill(-1);
     for (let i = 0; i < n; i++) {
       if (!this.land[i]) continue;
@@ -209,8 +208,11 @@ export class Match {
     return hash3(i, salt, this.state.seed) / 4294967296;
   }
 
-  troops(p) {
-    return p.troops;
+  /** Soldiers of a player in the field. */
+  army(pid) {
+    let n = 0;
+    for (const sq of this.state.squads) if (sq.owner === pid) n += sq.n;
+    return n;
   }
 
   allied(a, b) {
@@ -304,9 +306,15 @@ export class Match {
     }
     p.spawned = true;
     p.spawnAt = [x, y];
-    p.troops = RULES.startPop * p.troopShare;
-    p.workers = RULES.startPop - p.troops;
-    structures.create(this, 'town', pid, x, y, { capital: true });
+    p.pop = RULES.startPop;
+    p.gold = RULES.startGold;
+    const town = structures.create(this, 'town', pid, x, y, { capital: true });
+    // A small starting army waits at the gate.
+    RULES.startArmy.forEach(([type, n], k) => {
+      const [dx, dy] = [[1, 1], [-1, 1], [0, 2]][k % 3];
+      const sq = { id: this.nextId(), owner: pid, type, n, x: town.x + dx, y: town.y + dy, post: [town.x + dx, town.y + dy], path: null, pi: 0, pf: 0, state: 'idle', dest: null, cp: 0, born: this.state.t };
+      this.state.squads.push(sq);
+    });
     this.updatePeople(p, 0);
     this.event(-1, 'spawn', `${p.name} rises.`, x, y);
   }
@@ -334,26 +342,11 @@ export class Match {
   updatePeople(p, dt) {
     const towns = this.townLevels(p.id);
     p.maxPop = RULES.baseMaxPop + p.tiles * RULES.popPerTile + towns.pop;
-    let pop = p.troops + p.workers;
     if (dt > 0) {
-      // Growth goes to troops and workers by the slider; above the limit both shrink.
-      if (pop < p.maxPop) {
-        const g = RULES.growth * pop * (1 - pop / p.maxPop) * dt + 2 * dt;
-        p.troops += g * p.troopShare;
-        p.workers += g * (1 - p.troopShare);
-      } else {
-        const k = 1 - RULES.overflowDecay * dt * (1 - p.maxPop / Math.max(1, pop));
-        p.troops *= k;
-        p.workers *= k;
-      }
-      // People slowly move between the fields and the army to match the slider.
-      pop = p.troops + p.workers;
-      const move = (pop * p.troopShare - p.troops) * Math.min(1, RULES.rebalance * dt);
-      p.troops += move;
-      p.workers -= move;
+      if (p.pop < p.maxPop) p.pop += RULES.growth * p.pop * (1 - p.pop / p.maxPop) * dt + 0.5 * dt;
+      else p.pop -= (p.pop - p.maxPop) * RULES.overflowDecay * dt;
     }
-    p.pop = p.troops + p.workers;
-    p.goldRate = p.workers * RULES.goldPerWorker + towns.levels * RULES.goldPerTown;
+    p.goldRate = p.pop * RULES.goldPerPerson + towns.levels * RULES.goldPerTown;
     p.gold += p.goldRate * dt;
   }
 
@@ -488,7 +481,12 @@ export class Match {
     st.tick++;
     const every = (sec) => st.tick % Math.round(sec / dt) === 0;
     for (const p of st.players) if (p.alive) this.updatePeople(p, dt);
-    attacks.tick(this);
+    units.tick(this, dt);
+    units.upkeep(this, dt);
+    if (every(RULES.claimEvery)) units.claim(this);
+    if (every(1)) units.merge(this);
+    if (every(RULES.townClaimEvery)) territory.townClaims(this);
+    if (every(RULES.annexEvery)) territory.annex(this);
     naval.tick(this, dt);
     structures.tick(this);
     if (every(1)) {
@@ -525,8 +523,18 @@ export class Match {
 
   checkVictory() {
     const st = this.state;
+    // A realm that has lost its last town, port and outpost holds out for a
+    // minute (its soldiers may take one back), then falls.
+    const has = new Uint8Array(st.players.length);
+    for (const s of st.structures) if (s.owner >= 0) has[s.owner] = 1;
     for (const p of st.players) {
-      if (p.alive && p.spawned && p.tiles <= 0) this.eliminate(p);
+      if (!p.alive || !p.spawned) continue;
+      if (has[p.id]) p.homeless = 0;
+      else {
+        p.homeless = (p.homeless || 0) + 1;
+        if (p.homeless === 1) this.event(p.id, 'warning', 'You have lost every town and outpost. Take one back within a minute or your realm falls.');
+        if (p.homeless > 60 || !st.squads.some((sq) => sq.owner === p.id)) this.eliminate(p);
+      }
     }
     const living = st.players.filter((p) => p.alive);
     if (st.players.length > 1 && living.length === 1) return this.end(living[0], 'conquest');
@@ -541,12 +549,13 @@ export class Match {
   eliminate(p) {
     p.alive = false;
     p.pop = 0;
-    p.troops = 0;
-    p.workers = 0;
-    this.state.attacks = this.state.attacks.filter((a) => a.from !== p.id);
-    this.state.boats = this.state.boats.filter((b) => b.owner !== p.id);
-    this.state.alliances = this.state.alliances.filter((a) => a.a !== p.id && a.b !== p.id);
-    this.state.requests = this.state.requests.filter((r) => r.from !== p.id && r.to !== p.id);
+    const st = this.state;
+    st.squads = st.squads.filter((sq) => sq.owner !== p.id);
+    st.boats = st.boats.filter((b) => b.owner !== p.id);
+    st.alliances = st.alliances.filter((a) => a.a !== p.id && a.b !== p.id);
+    st.requests = st.requests.filter((r) => r.from !== p.id && r.to !== p.id);
+    // Its land goes back to the wilds.
+    for (let i = 0; i < this.owner.length; i++) if (this.owner[i] === p.id) this.setOwner(i, -1);
     this.event(-1, 'fall', `${p.name} has fallen.`);
   }
 

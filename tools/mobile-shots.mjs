@@ -104,7 +104,7 @@ async function run(dev) {
   await page.waitForFunction(() => window.__realm.cw.snap.phase === 'running', null, { timeout: 30000 });
   await page.waitForTimeout(2500);
   await shoot(page, `${dev}-07-running`);
-  // Attack the empty land next to us.
+  // Send riders onto the empty land next to us: pick the card, then tap where they go.
   const edge = await page.evaluate(() => {
     const cw = window.__realm.cw;
     for (let i = 0; i < cw.owner.length; i++) {
@@ -114,9 +114,12 @@ async function run(dev) {
     }
     return null;
   });
+  await tap(page, '[data-unit="rider"]');
+  await shoot(page, `${dev}-08a-armed`);
   await tapTile(page, edge.x, edge.y);
+  await tap(page, '[data-unit="rider"]');
   await page.waitForTimeout(3000);
-  await shoot(page, `${dev}-08-attack`);
+  await shoot(page, `${dev}-08-riders`);
   await tap(page, '#btn-board');
   await shoot(page, `${dev}-09-leaderboard`);
   await tap(page, '#btn-board');

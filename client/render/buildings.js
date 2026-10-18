@@ -11,12 +11,13 @@ import { shade, mix } from './color.js';
 
 const cache = new Map();
 const OUT = '#231a16';
+const SHADOW = '#2b1d26';
 
 const STONE = {
-  default: { base: '#9a99a2', dark: '#77767f', light: '#b5b4bc', mortar: '#66656e' },
-  adobe: { base: '#d3ad78', dark: '#b48c5c', light: '#e6c694', mortar: '#a07c50' },
-  ash: { base: '#4a4450', dark: '#35303a', light: '#5e5866', mortar: '#2a262f' },
-  nordic: { base: '#8d8c92', dark: '#6c6b72', light: '#a8a7ad', mortar: '#5a5960' },
+  default: { base: '#a19b95', dark: '#7c7570', light: '#bcb5ac', mortar: '#69615e' },
+  adobe: { base: '#d6b07b', dark: '#b68e5e', light: '#e8c997', mortar: '#a27d52' },
+  ash: { base: '#4c4550', dark: '#37303a', light: '#605866', mortar: '#2c252f' },
+  nordic: { base: '#928c87', dark: '#716a67', light: '#aca59e', mortar: '#5d5654' },
 };
 const stoneOf = (style) => STONE[style] || STONE.default;
 
@@ -274,7 +275,7 @@ function keep(p, ox, oy, FW, FH, extra, style, pal, o) {
   const top = oy + extra; // footprint top edge
   const lvl = o.level;
   const rnd = o.rnd;
-  const roofCol = style === 'adobe' ? '#c9a24a' : style === 'ash' ? '#7b2f2b' : style === 'nordic' ? '#4a3524' : style === 'harbor' ? '#3d7ba3' : '#3f5f9e';
+  const roofCol = style === 'adobe' ? '#c9a24a' : style === 'ash' ? '#7b2f2b' : style === 'nordic' ? '#4a3524' : style === 'harbor' ? '#4a7f98' : '#55678c';
   const cx = ox + (FW >> 1);
   if (lvl >= 2) {
     // Courtyard enclosed by curtain walls seen from above.
@@ -733,9 +734,37 @@ export function buildingSprite(b, style, color) {
     }
   }
   p.outline(OUT);
-  s = { canvas: p.toCanvas(), ox: ox, oy: oy + extra, w: p.w, h: p.h };
+  const q = withSideShadow(p);
+  s = { canvas: q.toCanvas(), ox: ox, oy: oy + extra, w: q.w, h: q.h };
   cache.set(key, s);
   return s;
+}
+
+/**
+ * A soft shadow falling to the right of the walls (light from the upper
+ * left). It stops a few rows above the base, where the settlement layer
+ * already lays its ground shadow, so the two join up.
+ */
+function withSideShadow(p) {
+  const q = new Pix(p.w + 3, p.h);
+  q.blit(p, 0, 0);
+  let top = -1;
+  for (let y = 0; y < p.h && top < 0; y++) for (let x = 0; x < p.w; x++) if (p.get(x, y)) top = y;
+  for (let y = top + 3; y < p.h - 4; y++) {
+    let xr = -1;
+    for (let x = p.w - 1; x >= 0; x--) {
+      if (p.get(x, y)) {
+        xr = x;
+        break;
+      }
+    }
+    if (xr < 0) continue;
+    const fade = Math.min(1, (y - top - 2) / 4);
+    q.set(xr + 1, y, SHADOW, 0.3 * fade);
+    q.set(xr + 2, y, SHADOW, 0.24 * fade);
+    q.set(xr + 3, y, SHADOW, 0.12 * fade);
+  }
+  return q;
 }
 
 export function clearBuildingCache() {

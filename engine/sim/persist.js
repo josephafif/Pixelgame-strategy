@@ -1,5 +1,5 @@
 // Saved games. A save holds the match options, the complete game state
-// (attacks keep their frontiers, boats their routes), every settlement
+// (squads keep their routes, ships theirs), every settlement
 // layout, the territory and the RNG position, so a loaded match continues
 // exactly as the original would have. The world is not stored: it is
 // regenerated from its seed and checked by fingerprint.
@@ -10,7 +10,7 @@ import { rle, unrle } from '../core/rle.js';
 import { mix32 } from '../core/rng.js';
 
 export const SAVE_FORMAT = 'realmwright-save';
-export const SAVE_VERSION = 3; // 3: the race for land (territory, troops, boats)
+export const SAVE_VERSION = 4; // 4: soldiers that march (squads), garrisons
 
 /** A cheap fingerprint of the generated world, to reject mismatched saves. */
 export function worldFingerprint(world) {

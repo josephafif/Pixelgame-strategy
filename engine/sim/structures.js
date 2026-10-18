@@ -1,13 +1,14 @@
 // Towns, ports and outposts. Each one is a settlement layout from the town
 // planner: a town grows houses, fields and civic buildings as its level
-// rises; a port is a harbour village; an outpost is a walled watch post.
-// Whoever takes the tile a structure stands on takes the structure.
+// rises; a port is a harbour village; an outpost is a walled fort. Each has
+// a garrison; when it is gone, the first rival squad at the gate takes the
+// place and the land it guarded (engine/sim/units.js).
 
 import { createLayout, addBuilding, applyStage, buildWalls, markBlocked } from '../settlement/planner.js';
 import { canFoundAt } from '../world/sites.js';
 import { placeName } from '../world/names.js';
 import { BIOMES } from '../world/biomes.js';
-import { RULES, TOWN_LEVELS, TOWN_PLAN, MAX_TOWN_LEVEL, STRUCTURES, structureCost, upgradeCost } from './defs.js';
+import { RULES, TOWN_LEVELS, TOWN_PLAN, MAX_TOWN_LEVEL, STRUCTURES, structureCost, upgradeCost, garrisonMax } from './defs.js';
 
 const LAYOUT_OPS_PER_STEP = 3;
 
@@ -31,7 +32,9 @@ export function create(m, kind, owner, x, y, { capital = false } = {}) {
     grownAt: st.t,
     built: st.t,
     layoutV: 0,
+    garrison: 0,
   };
+  s.garrison = garrisonMax(s);
   const L = createLayout(m.world, { id, cx: x, cy: y, seed: st.seed, kind: capital ? 'capital' : kind === 'outpost' ? 'outpost' : 'town', blocked: m.struct });
   m.layouts.set(id, L);
   st.structures.push(s);
@@ -44,7 +47,7 @@ export function create(m, kind, owner, x, y, { capital = false } = {}) {
     applyStage(m.world, L, 1);
     for (const b of ['harbor', 'house', 'fishery', 'house', 'house']) layoutOp(m, s, b);
   } else {
-    for (const b of ['tower', 'house', 'tower']) layoutOp(m, s, b);
+    for (const b of ['tower', 'barracks', 'tower', 'house']) layoutOp(m, s, b);
     buildWalls(m.world, L, 1);
   }
   m.layoutChanged(s);
@@ -65,6 +68,7 @@ export function captured(m, sid, from, to) {
   if (!s || s.owner === to) return;
   s.owner = to;
   s.capital = false;
+  s.garrison = garrisonMax(s) * 0.2;
   m.state.structV++;
   const what = STRUCTURES[s.kind].name.toLowerCase();
   const p = m.state.players[to];
@@ -130,8 +134,10 @@ export function upgrade(m, pid, sid) {
   const cost = upgradeCost(s.level);
   if (p.gold < cost) return { error: `Growing ${s.name} costs ${cost} gold.` };
   p.gold -= cost;
+  const before = garrisonMax(s);
   s.level++;
   s.full = false;
+  s.garrison += garrisonMax(s) - before;
   m.state.structV++;
   const L = m.layouts.get(s.id);
   markBlocked(L, m.struct, m.world);

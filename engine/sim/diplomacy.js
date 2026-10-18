@@ -1,10 +1,10 @@
-// Alliances. A player asks, the other accepts or declines. Allies cannot
-// attack each other, and their trade ships earn more. An alliance lasts five
-// minutes and can be renewed in its last minute. Breaking one makes you a
-// traitor: for a minute your land is easier to take.
+// Alliances. A player asks, the other accepts or declines. Allies' soldiers
+// do not fight each other or take each other's land, and their trade ships
+// earn more. An alliance lasts five minutes and can be renewed in its last
+// minute. Breaking one makes you a traitor: for a minute your soldiers and
+// garrisons take more damage.
 
 import { RULES } from './defs.js';
-import * as attacks from './attack.js';
 
 export function alliance(m, a, b) {
   return m.state.alliances.find((q) => (q.a === a && q.b === b) || (q.a === b && q.b === a)) || null;
@@ -49,7 +49,6 @@ export function answer(m, pid, rid, accept) {
   if (al) al.until = st.t + RULES.allianceTime;
   else {
     st.alliances.push({ a: r.from, b: r.to, since: st.t, until: st.t + RULES.allianceTime });
-    attacks.callOff(m, r.from, r.to);
   }
   m.event(-1, 'alliance', `${p.name} and ${q.name} ${al ? 'renew their' : 'form an'} alliance.`);
   return { ok: true };
