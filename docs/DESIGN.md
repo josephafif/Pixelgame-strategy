@@ -208,6 +208,18 @@ Clients send `{ t: 'cmd', cmd }`. Commands are validated by the same code path t
 lobby, seats, reconnect tokens, spectators for late arrivals and per-client snapshot streaming with
 backpressure.
 
+## Installable app (`client/manifest.webmanifest`, `client/sw.js`)
+
+The client is a progressive web app. The manifest names it, opens it full screen in any orientation
+and points at pixel-art icons drawn from code (`tools/make-icons.mjs`; maskable and Apple variants keep
+the keep inside the safe area). The service worker, registered by `main.js` on https or localhost,
+stores every file of the client and the engine on install, from `client/precache.json` (written by
+the static build, answered by the Node server). Every request goes to the network first and refreshes
+the stored copy, so a new version shows on the next start; if the network fails, or takes more than
+four seconds, the stored copy answers, so single player starts and plays offline. Google's pixel
+fonts are kept the same way. The title screen offers *Install as an app* where the browser allows it,
+and a Share-menu hint on iPhone and iPad.
+
 ## Saved games (`engine/sim/persist.js`, `server/saves.js`)
 
 A save stores the following; the world is not stored but regenerated from its seed:

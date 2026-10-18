@@ -31,6 +31,11 @@ Open <http://localhost:8080> in a browser.
 - **Single player** (*New realm*): the authoritative simulation runs in a Web Worker in your browser. You
   can save from the menu (Esc or ☰), and the game autosaves every three minutes. *Continue saved realm*
   resumes it. *Download save file* and *Load save file…* move a realm between browsers.
+- **As an app (PWA)**: the game can be installed from the browser (Android/desktop Chrome and Edge:
+  *Install as an app* on the title screen or the browser menu; iPhone/iPad: Safari's Share menu, *Add
+  to Home Screen*). It then opens full screen with its own icon, and single player works offline: a
+  service worker keeps every file of the client and the engine, and fetches the newest version
+  whenever there is a connection. Installing needs https (or localhost).
 - **Multiplayer**: one player creates a room and shares the five-letter code. Up to 8 humans can join,
   plus up to 24 AI rivals. The server runs the simulation and only accepts validated commands. Players who
   disconnect rejoin with the same code and get their realm back. The server saves running matches every
@@ -117,6 +122,7 @@ node tools/mp-browser.mjs shots            # two browsers in one multiplayer roo
 node tools/mobile-shots.mjs shots all       # every menu and HUD state: phone portrait, landscape, desktop
 node tools/perf-zoom.mjs both              # frame times while zooming, pinching and panning (desktop and phone)
 node tools/perf-mobile.mjs large 10 4      # a 10-minute large match on a phone profile, CPU slowed 4x
+node tools/make-icons.mjs                  # redraw the app icons (client/icons/) from code
 node tools/shoot.mjs "/client/debug/sprites.html?scale=3" out.png 1200 900   # screenshot any page
 ```
 

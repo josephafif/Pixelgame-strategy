@@ -130,11 +130,40 @@ function hideModal() {
   modalBack.hidden = true;
 }
 
+// Installing the game as an app (PWA): browsers that can install offer a
+// prompt we keep for the title menu's button; on iPhone and iPad it is done
+// from Safari's Share menu.
+let installPrompt = null;
+const installed = () => !!(window.matchMedia?.('(display-mode: standalone)').matches || window.matchMedia?.('(display-mode: fullscreen)').matches || navigator.standalone);
+const appleTouch = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function installHtml() {
+  if (installed()) return '';
+  if (installPrompt) return '<button class="btn" data-go="install">Install as an app</button>';
+  if (appleTouch) return '<p class="small muted" style="text-align:center;margin:4px 0 0">To play it as an app: Share, then Add to Home Screen.</p>';
+  return '';
+}
+
+function renderInstall() {
+  const slot = document.getElementById('install-slot');
+  if (slot) slot.innerHTML = installHtml();
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  renderInstall();
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  renderInstall();
+});
+
 function titleMenu(err = '') {
   const info = savedInfo();
   const live = session?.single && session.cw;
   showModal(`<h1>Realmwright</h1>
-    <div class="tagline">Raise an army, march it where you want and hold the land it stands on.<br>Towns grow on their own; ally, betray and trade. First to 80% of the map wins.</div>
+    <div class="tagline">Found towns that take the land around them and grow into cities.<br>Raise an army, take your rivals' places; ally, betray and trade. First to 80% of the map wins.</div>
     ${err ? `<p class="bad" style="text-align:center">${esc(err)}</p>` : ''}
     <div class="menu">
       ${session ? '<button class="btn go" data-go="resume">Return to the realm</button>' : ''}
@@ -144,6 +173,7 @@ function titleMenu(err = '') {
       <button class="btn" data-go="multi">Multiplayer</button>
       <button class="btn" data-go="load-file">Load save file…</button>
       <button class="btn" data-go="help">How to play</button>
+      <div id="install-slot">${installHtml()}</div>
     </div>
     <p class="small muted" style="text-align:center;margin-top:18px">A real-time strategy game · pixel art in the spirit of Pixelgame</p>`);
 }
@@ -389,6 +419,13 @@ modal.addEventListener('click', (e) => {
   else if (go === 'single') singleSetup();
   else if (go === 'multi') multiSetup();
   else if (go === 'help') helpScreen();
+  else if (go === 'install' && installPrompt) {
+    installPrompt.prompt();
+    installPrompt.userChoice.finally(() => {
+      installPrompt = null;
+      renderInstall();
+    });
+  }
   else if (go === 'start-single') startSingle();
   else if (go === 'save') saveSession().then(() => titleMenu());
   else if (go === 'download') downloadSave();
@@ -423,4 +460,11 @@ if (q.get('autostart')) {
   runGame(new WorkerTransport({ name: 'Tester', seed: Number(q.get('seed') || 7), size: q.get('size') || 'small', ais: Number(q.get('ais') || 4), timeLimit: 20 }), true);
 } else {
   titleMenu();
+}
+
+// The service worker keeps the game for offline play and makes it installable.
+// (Not under automated browsers unless asked for with ?sw=1, so tests start clean.)
+const secure = location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname);
+if ('serviceWorker' in navigator && secure && (!navigator.webdriver || q.get('sw'))) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }

@@ -2,6 +2,7 @@
 
 import { createReadStream, statSync } from 'node:fs';
 import { extname, join, normalize, resolve } from 'node:path';
+import { precacheList } from './precache.js';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -12,6 +13,7 @@ const TYPES = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.webmanifest': 'application/manifest+json',
   '.md': 'text/markdown; charset=utf-8',
 };
 
@@ -38,6 +40,13 @@ export function makeStaticHandler(root) {
     }
     if (url.endsWith('/')) url += 'index.html';
     const rel = normalize(url).replace(/^([/\\])+/, '');
+    if (rel.replace(/\\/g, '/') === 'client/precache.json') {
+      // What the installed app keeps for offline play (the static build writes this file).
+      const body = JSON.stringify(precacheList(base));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+      res.end(body);
+      return;
+    }
     const top = rel.split(/[/\\]/)[0];
     if (!PUBLIC.includes(top)) {
       res.writeHead(404);
