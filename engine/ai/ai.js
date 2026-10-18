@@ -1,25 +1,26 @@
 // AI players. Once a second each one reads the survey (who borders whom,
 // how much unclaimed land is next to it) and the soldiers on the map, and
 // issues the same commands a human would:
-// - riders roam the empty land nearby to claim it;
+// - it takes land the way everyone does, by founding towns and outposts at
+//   the edge of its realm facing unclaimed land, and by growing its towns;
 // - guards (spears and bows) stand by the towns and outposts that face the
 //   most dangerous neighbour, and reinforcements are raised where an enemy
 //   column is coming;
 // - when it has the upper hand, it marches a mixed army (with trebuchets)
 //   on the nearest town or outpost of its weakest rival;
-// - it builds and grows towns, ports and outposts, and makes, keeps or
-//   breaks alliances.
+// - it builds ports, and makes, keeps or breaks alliances.
+// It is bound by the same limits on soldiers and squads as a human.
 // Three temperaments: builders grow and fortify, merchants trade and ally,
 // warlords keep a large army and look for prey.
 
-import { MAX_TOWN_LEVEL, UNITS, structureCost, upgradeCost } from '../sim/defs.js';
+import { MAX_TOWN_LEVEL, RULES, TOWN_LEVELS, STRUCTURES, UNITS, structureCost, upgradeCost, landRadius } from '../sim/defs.js';
 import { buildCheck } from '../sim/structures.js';
 import { power as squadPower } from '../sim/units.js';
 
 const STYLE = {
-  builder: { army: 0.45, edge: 1.4, trust: 0.6, towns: 1.2, ports: 0.7, outposts: 1, claimers: 1, guard: 0.7 },
-  merchant: { army: 0.35, edge: 1.7, trust: 0.85, towns: 1, ports: 1.6, outposts: 0.6, claimers: 1, guard: 0.6 },
-  warlord: { army: 0.65, edge: 1.05, trust: 0.35, towns: 0.8, ports: 0.4, outposts: 0.5, claimers: 1.2, guard: 0.5 },
+  builder: { army: 0.45, edge: 1.4, trust: 0.6, towns: 1.2, ports: 0.7, outposts: 1, guard: 0.7 },
+  merchant: { army: 0.35, edge: 1.7, trust: 0.85, towns: 1, ports: 1.6, outposts: 0.6, guard: 0.6 },
+  warlord: { army: 0.65, edge: 1.05, trust: 0.35, towns: 0.8, ports: 0.4, outposts: 0.5, guard: 0.5 },
 };
 
 // How hard the AI plays: how big an edge it wants before attacking, and how
@@ -35,7 +36,6 @@ const DIR8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -
 const xy = (m, i) => ({ x: i % m.W, y: (i / m.W) | 0 });
 const GARRISON_POWER = 7; // a garrison soldier, in squad power units
 const MAX_ORDERS = 4; // deploy and move orders per think (each finds a path)
-const MAX_SQUADS = 90;
 
 export function thinkAI(m, p) {
   const st = m.state;
@@ -51,7 +51,6 @@ export function thinkAI(m, p) {
   diplomacy(m, p, s, mem);
   const threat = defend(ctx);
   if (!threat) spend(m, p, s);
-  claimLand(ctx);
   guard(ctx);
   attack(ctx);
 }
@@ -70,16 +69,12 @@ function order(ctx, cmd) {
   return ctx.m.exec(ctx.p.id, cmd);
 }
 
-function idle(ctx, role) {
-  return ctx.mine.filter((q) => (ctx.mem.roles[q.id] || 'guard') === role && q.state === 'idle' && !q.fighting);
-}
-
 /** Raise n soldiers of a type toward (x, y) and give them a role. */
 function raise(ctx, unit, n, x, y, role) {
   const { p } = ctx;
   n = Math.min(n, Math.floor(p.gold / UNITS[unit].cost), 200);
   // Few, sizeable squads: easier to read on the map, cheaper to simulate.
-  if (n < (unit === 'trebuchet' ? 1 : 5) || ctx.mine.length >= MAX_SQUADS) return false;
+  if (n < (unit === 'trebuchet' ? 1 : 5) || ctx.mine.length >= RULES.maxSquads - 2) return false;
   const r = order(ctx, { type: 'deploy', unit, n, x, y });
   if (r.ok) ctx.mem.roles[r.id] = role;
   return !!r.ok;
@@ -123,39 +118,6 @@ function defend(ctx) {
   raise(ctx, 'shield', Math.min(need, Math.floor((budget * 0.6) / UNITS.shield.cost)), s.x, s.y, 'guard');
   raise(ctx, 'bow', Math.min(Math.ceil(need / 2), Math.floor((budget * 0.4) / UNITS.bow.cost)), s.x, s.y, 'guard');
   return true;
-}
-
-/** An unclaimed land tile within reach of (x, y), sampled. */
-function emptyLandNear(m, x, y, r0, r1) {
-  for (let k = 0; k < 40; k++) {
-    const a = m.rng.next() * Math.PI * 2;
-    const d = r0 + m.rng.next() * (r1 - r0);
-    const tx = Math.round(x + Math.cos(a) * d);
-    const ty = Math.round(y + Math.sin(a) * d);
-    if (tx < 2 || ty < 2 || tx >= m.W - 2 || ty >= m.H - 2) continue;
-    const i = m.idx(tx, ty);
-    if (m.land[i] && m.owner[i] === -1) return { x: tx, y: ty };
-  }
-  return null;
-}
-
-/** Riders roam the empty land nearby; more are raised while there is land to take. */
-function claimLand(ctx) {
-  const { m, p, s, mine } = ctx;
-  const sv = m.state.survey;
-  const [neutral, nTile] = sv.neutral[p.id] || [0, -1];
-  for (const q of idle(ctx, 'claim')) {
-    const spot = emptyLandNear(m, q.x, q.y, 6, 30) || (nTile >= 0 ? xy(m, nTile) : null);
-    if (spot) order(ctx, { type: 'move', ids: [q.id], x: spot.x, y: spot.y });
-    else ctx.mem.roles[q.id] = 'guard';
-  }
-  if (neutral <= 0 || nTile < 0) return;
-  const claimers = mine.filter((q) => ctx.mem.roles[q.id] === 'claim').length;
-  const want = Math.min(6, Math.round((1.5 + p.tiles / 1500) * s.claimers));
-  if (claimers < want && p.gold > UNITS.rider.cost * 6) {
-    const at = xy(m, nTile);
-    raise(ctx, 'rider', 6 + Math.min(6, Math.floor(p.gold / 400)), at.x, at.y, 'claim');
-  }
 }
 
 /** A few guards stand at the places nearest the most dangerous neighbour. */
@@ -237,9 +199,9 @@ function attack(ctx) {
     const open = 1 - st.players.reduce((t, o) => t + o.tiles, 0) / m.landTotal;
     if (neutral > 30 && open > 0.08 && p.personality !== 'warlord') return;
     if (p.pop / Math.max(1, p.maxPop) < 0.4) return;
-    // What we could field: soldiers not busy claiming, plus what the treasury buys.
+    // What we could field: our soldiers, plus what the treasury buys.
     let field = p.gold * 0.8;
-    for (const q of mine) if (mem.roles[q.id] !== 'claim') field += squadPower(q) * 0.6;
+    for (const q of mine) field += squadPower(q) * 0.6;
     const near = (sv.contacts[p.id] || []).map((c) => c[0]);
     // An island realm looks across the water.
     const rivals = near.length ? near : st.players.filter((o) => o.id !== p.id && o.alive).map((o) => o.id);
@@ -310,22 +272,35 @@ function attack(ctx) {
   raise(ctx, p.gold > 900 ? 'knight' : 'rider', Math.floor((g * 0.2) / (p.gold > 900 ? UNITS.knight.cost : UNITS.rider.cost)), wx, wy, 'strike');
 }
 
-/** Towns, upgrades, ports and outposts, keeping gold for the army. */
+/**
+ * Towns, upgrades, ports and outposts, keeping gold for the army. Land
+ * comes from places: while unclaimed land borders the realm, new towns and
+ * outposts go up at the edge facing it.
+ */
 function spend(m, p, s) {
   const st = m.state;
   const own = st.structures.filter((q) => q.owner === p.id);
   const towns = own.filter((q) => q.kind === 'town');
   const ports = own.filter((q) => q.kind === 'port');
   const outposts = own.filter((q) => q.kind === 'outpost');
-  const keep = 120 * s.army;
-  const wantTowns = 1 + Math.floor((p.tiles / 700) * s.towns);
+  const keep = 150 * s.army;
+  const [neutral] = st.survey.neutral[p.id] || [0];
   const townCost = structureCost('town', p.built.town);
-  if (towns.length < wantTowns && p.gold >= townCost + keep) {
-    const spot = findSpot(m, p, 'town', 5);
-    if (spot && m.exec(p.id, { type: 'build', kind: 'town', x: spot.x, y: spot.y }).ok) return;
+  const outpostCost = structureCost('outpost', p.built.outpost);
+  if (neutral > 0) {
+    if (p.gold >= townCost + keep) {
+      const spot = frontierSpot(m, p, 'town', TOWN_LEVELS[1].land);
+      if (spot && spot.score >= 25 && m.exec(p.id, { type: 'build', kind: 'town', x: spot.x, y: spot.y }).ok) return;
+    }
+    // Outposts reach further for less; towns are better for a realm that has few.
+    if (p.gold >= outpostCost + keep && (towns.length >= 2 * s.towns || p.gold < townCost)) {
+      const spot = frontierSpot(m, p, 'outpost', STRUCTURES.outpost.land);
+      if (spot && spot.score >= 15 && m.exec(p.id, { type: 'build', kind: 'outpost', x: spot.x, y: spot.y }).ok) return;
+    }
   }
+  // Grow towns: more people, gold, soldiers to command and land around them.
   const low = towns.filter((q) => q.level < MAX_TOWN_LEVEL).sort((a, b) => a.level - b.level || (b.capital ? 1 : 0) - (a.capital ? 1 : 0))[0];
-  if (low && p.gold >= upgradeCost(low.level) + keep && (towns.length >= wantTowns || p.gold >= upgradeCost(low.level) + townCost)) {
+  if (low && p.gold >= upgradeCost(low.level) + keep && (neutral <= 0 || p.gold >= upgradeCost(low.level) + townCost)) {
     if (m.exec(p.id, { type: 'upgrade', sid: low.id }).ok) return;
   }
   const portCost = structureCost('port', p.built.port);
@@ -338,11 +313,48 @@ function spend(m, p, s) {
   const threat = (st.survey.contacts[p.id] || [])
     .filter(([q]) => !m.allied(p.id, q) && st.players[q].alive)
     .sort((a, b) => power(m, st.players[b[0]]) - power(m, st.players[a[0]]))[0];
-  if (threat && outposts.length < Math.ceil(towns.length * s.outposts) && p.gold >= structureCost('outpost', p.built.outpost) + keep) {
+  if (threat && outposts.length < Math.ceil(towns.length * s.outposts) && p.gold >= outpostCost + keep) {
     const at = xy(m, threat[2]);
     const spot = nearOwn(m, p, at.x, at.y, 9);
     if (spot) m.exec(p.id, { type: 'build', kind: 'outpost', x: spot.x, y: spot.y });
   }
+}
+
+/**
+ * The best own spot near the edge for a new place of `kind` that would take
+ * land within `r`: the one with the most unclaimed land in its reach.
+ */
+function frontierSpot(m, p, kind, r) {
+  // Candidates: around the rim of each place's land, plus a few anywhere in the realm.
+  const spots = [];
+  for (const s of m.state.structures) {
+    if (s.owner !== p.id) continue;
+    const d = landRadius(s) - 1;
+    for (let a = 0; a < 8; a++) spots.push([Math.round(s.x + Math.cos((a / 8) * Math.PI * 2 + s.id) * d), Math.round(s.y + Math.sin((a / 8) * Math.PI * 2 + s.id) * d)]);
+  }
+  const [x0, y0, x1, y1] = p.bbox;
+  if (x1 < x0) return null;
+  for (let k = 0; k < 10; k++) spots.push([m.rng.int(x0, x1), m.rng.int(y0, y1)]);
+  let best = null;
+  for (const [x, y] of spots) {
+    if (x < 0 || y < 0 || x >= m.W || y >= m.H || m.owner[m.idx(x, y)] !== p.id) continue;
+    let score = 0;
+    for (let dy = -r; dy <= r; dy += 2) {
+      for (let dx = -r; dx <= r; dx += 2) {
+        if (dx * dx + dy * dy > r * r) continue;
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= m.W || ny >= m.H) continue;
+        const i = ny * m.W + nx;
+        if (m.land[i] && m.owner[i] === -1) score += 4;
+      }
+    }
+    if (!score || (best && score <= best.score)) continue;
+    const c = buildCheck(m, p.id, kind, x, y);
+    if (c.error) continue;
+    best = { x: c.x, y: c.y, score };
+  }
+  return best;
 }
 
 function endgameRival(m, p, q) {

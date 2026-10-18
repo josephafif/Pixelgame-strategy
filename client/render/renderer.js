@@ -520,30 +520,38 @@ export class Renderer {
 
   // Frame -------------------------------------------------------------------
 
+  /** Milliseconds since the map last moved, zoomed or was touched. */
+  quietFor(now) {
+    return now - Math.max(this.moveAt || 0, this.zoomAt || 0, this.inputAt || 0, this.anim || this.fly ? now : 0);
+  }
+
   /**
    * A device that cannot keep up gets a lower drawing resolution (2x, 1.5x,
-   * then 1x): judged over two seconds of frames once the game has settled.
+   * then 1x): judged over two seconds of frames once the game has settled,
+   * by how late frames come against the rate asked for (`target` ms apart).
    */
-  watchFrameRate(now) {
+  watchFrameRate(now, target) {
     const gap = now - (this.lastFrameAt || now);
     this.lastFrameAt = now;
     this.startedAt ||= now;
-    if (gap <= 0 || gap > 120 || now - this.startedAt < 5000 || typeof document !== 'undefined' && document.hidden) return;
+    if (gap <= 0 || gap > 120 || now - this.startedAt < 5000 || (typeof document !== 'undefined' && document.hidden)) return;
+    this.lateSum = (this.lateSum || 0) + Math.max(0, gap - target);
     this.gapSum = (this.gapSum || 0) + gap;
     this.gapN = (this.gapN || 0) + 1;
     if (this.gapSum < 2000) return;
-    const avg = this.gapSum / this.gapN;
+    const late = this.lateSum / this.gapN;
+    this.lateSum = 0;
     this.gapSum = 0;
     this.gapN = 0;
-    if (avg > 26 && this.dpr > 1 && !this.fixedDpr) {
+    if (late > 10 && this.dpr > 1 && !this.fixedDpr) {
       this.dprCap = this.dpr > 1.5 ? 1.5 : 1;
       this.resize();
     }
   }
 
-  frame(now) {
+  frame(now, target = 1000 / 60) {
     this.frameNo++;
-    this.watchFrameRate(now);
+    this.watchFrameRate(now, target);
     this.now = now;
     this.mainBudget = 2;
     this.stepFly(now);
@@ -965,7 +973,8 @@ export class Renderer {
     if (this.now - (this.moveAt || 0) < 400 || this.now - (this.zoomAt || 0) < 400) return;
     const mcx = this.cam.x / CHUNK;
     const mcy = this.cam.y / CHUNK;
-    for (let r = 0; r < Math.max(this.chunksX, this.chunksY); r++) {
+    // Within ten chunks of the view: enough for a quick zoom out, and big maps stay affordable.
+    for (let r = 0; r <= Math.min(10, Math.max(this.chunksX, this.chunksY)); r++) {
       for (let cy = Math.floor(mcy) - r; cy <= Math.floor(mcy) + r; cy++) {
         for (let cx = Math.floor(mcx) - r; cx <= Math.floor(mcx) + r; cx++) {
           if (cx < 0 || cy < 0 || cx >= this.chunksX || cy >= this.chunksY) continue;

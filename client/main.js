@@ -148,21 +148,21 @@ function titleMenu(err = '') {
     <p class="small muted" style="text-align:center;margin-top:18px">A real-time strategy game · pixel art in the spirit of Pixelgame</p>`);
 }
 
-const DEFAULT_AIS = { small: 6, medium: 10, large: 16, huge: 24 };
-const SIZE_NAMES = { small: 'small', medium: 'medium', large: 'large', huge: 'huge (slow devices may struggle)' };
+const DEFAULT_AIS = { small: 6, medium: 10, large: 16, huge: 24, vast: 30 };
+const SIZE_NAMES = { small: 'small', medium: 'medium', large: 'large', huge: 'huge', vast: 'vast (for fast devices)' };
 const sizeOptions = (cur) => Object.keys(DEFAULT_AIS).map((s) => `<option value="${s}" ${s === cur ? 'selected' : ''}>${SIZE_NAMES[s]}</option>`).join('');
 
 function singleSetup() {
-  const o = store.get('single3', { name: 'House Ardent', size: 'large', ais: 16, timeLimit: 30, difficulty: 'normal' });
-  const aiOptions = (n) => [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24].map((k) => `<option ${k === n ? 'selected' : ''}>${k}</option>`).join('');
+  const o = store.get('single4', { name: 'House Ardent', size: 'large', ais: 16, timeLimit: 60, difficulty: 'normal' });
+  const aiOptions = (n) => [1, 2, 3, 4, 6, 8, 10, 12, 16, 20, 24, 30].map((k) => `<option ${k === n ? 'selected' : ''}>${k}</option>`).join('');
   showModal(`<h2>A new realm</h2>
     <label>Your realm <input id="f-name" value="${esc(o.name)}" maxlength="20"></label>
     <label>World seed <input id="f-seed" type="number" value="${Math.floor(Math.random() * 99999) + 1}"></label>
     <label>Map size <select id="f-size">${sizeOptions(o.size)}</select></label>
     <label>AI rivals <select id="f-ais">${aiOptions(o.ais)}</select></label>
     <label>Rivals play <select id="f-diff">${['easy', 'normal', 'hard'].map((d) => `<option value="${d}" ${d === (o.difficulty || 'normal') ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
-    <label>Time limit (min) <input id="f-time" type="number" value="${o.timeLimit}" min="5" max="60"></label>
-    <p class="small muted">Rivals are builders, merchants and warlords and follow the same rules as you. A match takes 20 to 40 minutes; when time runs out, the realm with the most land wins.</p>
+    <label>Time limit (min) <input id="f-time" type="number" value="${o.timeLimit}" min="5" max="180"></label>
+    <p class="small muted">Rivals are builders, merchants and warlords and follow the same rules as you. A match is meant to last: an hour by default, up to three; when time runs out, the realm with the most land wins.</p>
     <div class="footer"><button class="btn" data-go="title">Back</button><button class="btn primary" data-go="start-single">Begin</button></div>`);
   // A bigger map suggests more rivals, until the player picks a number.
   const size = document.getElementById('f-size');
@@ -178,12 +178,13 @@ function singleSetup() {
 function helpScreen() {
   showModal(`<h2>How to play</h2><div class="help small">
     <p><b>Pick where to start.</b> Tap open land. You begin with a hamlet, a patch of land and a small army at its gate.</p>
-    <p><b>Your people grow with your land and towns</b> and earn gold. Soldiers cost gold to raise and a little upkeep while they live; an empty treasury makes them desert.</p>
+    <p><b>Land comes from your settlements.</b> Every town, port and outpost slowly takes the unclaimed land around it, a town further as it grows (hamlet, village, town, city). To spread out, found new towns and outposts near your border. Soldiers take no land by walking on it.</p>
+    <p><b>Your people grow with your land and towns</b> and earn gold. Soldiers are dear: they cost gold to raise and upkeep while they live, and your realm can only command so many (the second number next to the soldier icon); bigger towns and more outposts command more. An empty treasury makes soldiers desert.</p>
     <p><b>Raise soldiers like dropping troops:</b> pick a realm to march on (🎯, or tap their land), pick a kind of soldier in the bar below, then tap where they should go. They are raised at your nearest town, port or outpost and march there; the number on the bulk button (×5, ×10…) is how many each tap sends, and holding your finger down keeps sending. A besieged town cannot raise soldiers.</p>
-    <p><b>Soldiers hold the ground they stand on.</b> Standing soldiers claim the land around them: unclaimed land quickly, a rival's land only where none of their soldiers stand and no town or outpost guards it. Towns and outposts have a garrison that fires on attackers; when it is gone and your soldiers reach the gate, the place is yours.</p>
-    <p><b>Kinds of soldiers.</b> <b>Shieldbearers</b> (cheap, stop horsemen), <b>Longbows</b> (shoot from afar, beat shields), <b>Outriders</b> (fast horsemen that claim land quickly and run down archers), <b>Knights</b> (costly, strong all round) and <b>Trebuchets</b> (slow, but break garrisons and walls). Forests and hills give cover. Soldiers walk round lakes and bays; only to reach other land, such as an island, do they take to boats.</p>
-    <p><b>Give orders</b> by tapping your soldiers to select them (or dragging a box around them with the mouse; on a phone, hold, then drag), then tapping where they should go. Soldiers only fight where they stand until you send them on.</p>
-    <p><b>Build</b> with gold: <b>towns</b> (more people and gold; they grow by themselves into pixel-art cities, and you can raise them to village, town and city), <b>ports</b> (trade ships sail to other players' ports and both sides earn gold) and <b>outposts</b> (a garrison, and a place to raise soldiers near the front).</p>
+    <p><b>War is about places.</b> Soldiers go for enemies that come near them by themselves (archers and siege engines from afar). Towns and outposts have a garrison that fires on attackers; when it is gone and your soldiers reach the gate, the place is yours, and with it the land around it.</p>
+    <p><b>Kinds of soldiers.</b> <b>Shieldbearers</b> (cheapest, stop horsemen), <b>Longbows</b> (shoot from eight tiles, beat shields), <b>Outriders</b> (fast horsemen that run down archers), <b>Knights</b> (costly, strong all round) and <b>Trebuchets</b> (slow, but break garrisons and walls from twelve tiles). Forests and hills give cover. Soldiers walk round lakes and bays; only to reach other land, such as an island, do they take to boats.</p>
+    <p><b>Give orders</b> by tapping your soldiers to select them (or dragging a box around them with the mouse; on a phone, hold, then drag), then tapping where they should go. Left alone, soldiers hold their post and only chase enemies a short way.</p>
+    <p><b>Build</b> with gold, on your own land: <b>towns</b> (land, people and gold; they grow by themselves into pixel-art cities, and you can raise them to village, town and city for more land and soldiers), <b>outposts</b> (take land, a garrison of archers, and a place to raise soldiers near the front) and <b>ports</b> (trade ships sail to other players' ports and both sides earn gold).</p>
     <p><b>Alliances.</b> Long-press (or right-click) a realm to ask for an alliance. Allies neither fight nor take each other's land. An alliance lasts five minutes and can be renewed; whoever breaks one is a traitor for a minute.</p>
     <p><b>Win</b> by holding 80% of all land, by being the last realm standing, or by holding the most land when time runs out.</p>
     <p><b>Mouse:</b> left click selects, left drag draws a selection box (Shift adds), right click sends the selected soldiers, right or middle drag pans, wheel zooms. <b>Touch:</b> drag pans, pinch zooms, tap selects or sends, hold and drag selects several, hold for more. <b>Keys:</b> 1–5 pick a soldier, 0 none, Q/E bulk size, T target, F select every soldier, X halt, H home, B/P/O build town/port/outpost, WASD or arrows pan, +/- zoom, Space pause, ,/. speed, Esc menu.</p>
@@ -215,10 +216,10 @@ function lobbyScreen(room, me, isHost) {
     <h3 class="small">Settings</h3>
     <label>World seed <input id="o-seed" type="number" value="${o.seed}" ${isHost ? '' : 'disabled'}></label>
     <label>Map size <select id="o-size" ${isHost ? '' : 'disabled'}>${sizeOptions(o.size)}</select></label>
-    <label>AI rivals <input id="o-ais" type="number" min="0" max="24" value="${o.ais}" ${isHost ? '' : 'disabled'}></label>
+    <label>AI rivals <input id="o-ais" type="number" min="0" max="30" value="${o.ais}" ${isHost ? '' : 'disabled'}></label>
     <label>Rivals play <select id="o-diff" ${isHost ? '' : 'disabled'}>${['easy', 'normal', 'hard'].map((d) => `<option value="${d}" ${d === (o.difficulty || 'normal') ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
     <label>Time to choose a start (s) <input id="o-place" type="number" min="10" max="120" value="${o.placementTime}" ${isHost ? '' : 'disabled'}></label>
-    <label>Time limit (min) <input id="o-time" type="number" min="5" max="60" value="${o.timeLimit}" ${isHost ? '' : 'disabled'}></label>
+    <label>Time limit (min) <input id="o-time" type="number" min="5" max="180" value="${o.timeLimit}" ${isHost ? '' : 'disabled'}></label>
     <div class="footer"><button class="btn" data-go="leave">Leave</button>${isHost ? '<span><button class="btn" data-go="save-opts">Save settings</button> <button class="btn primary" data-go="start-room">Start match</button></span>' : '<span class="muted">Waiting for the host…</span>'}</div>`);
 }
 
@@ -304,16 +305,22 @@ function runGame(transport, single) {
         if (session === s && cw.snap?.phase === 'running') saveSession(true);
       }, AUTOSAVE_EVERY);
     }
+    // At most 60 frames a second (many phones offer 120), and on touch
+    // screens 30 while nobody touches the map: the picture barely changes
+    // and the phone stays cool.
+    const touch = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
     const loop = (now) => {
+      s.raf = requestAnimationFrame(loop);
+      const target = touch && s.renderer.quietFor(now) > 1500 ? 1000 / 30 : 1000 / 60;
+      if (now - last < target - 2) return;
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
       s.ui.update(dt);
-      s.renderer.frame(now);
+      s.renderer.frame(now, target);
       if (now - miniAt > 400 && !$('minimap-wrap').hidden) {
         miniAt = now;
         s.renderer.drawMinimap($('minimap'));
       }
-      s.raf = requestAnimationFrame(loop);
     };
     s.raf = requestAnimationFrame(loop);
     window.__realm = s; // debugging and automated visual checks
@@ -328,10 +335,10 @@ function startSingle() {
     seed: Number($('f-seed').value) || 1,
     size: $('f-size').value,
     ais: Number($('f-ais').value),
-    timeLimit: Number($('f-time').value) || 30,
+    timeLimit: Number($('f-time').value) || 60,
     difficulty: $('f-diff').value,
   };
-  store.set('single3', { name: o.name, size: o.size, ais: o.ais, timeLimit: o.timeLimit, difficulty: o.difficulty });
+  store.set('single4', { name: o.name, size: o.size, ais: o.ais, timeLimit: o.timeLimit, difficulty: o.difficulty });
   endSession();
   loading('Raising the realm…');
   runGame(new WorkerTransport(o), true);

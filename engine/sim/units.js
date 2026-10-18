@@ -1,13 +1,14 @@
 // Soldiers. A squad is a group of soldiers of one type. Squads are raised
 // with gold and people at the player's town or outpost nearest to where they
-// are sent, march there over land (and sail across water), claim the land
-// around them, and hold where they stand: they fight any squad or garrison
-// of a player who is not their ally within reach. Damage is applied all at
-// once at the end of a step, so the order squads are processed in does not
-// matter.
+// are sent, march there over land (and sail across water), and hold where
+// they stand: they fight any squad or garrison of a player who is not their
+// ally within reach, and go for enemies that come near by themselves. They
+// take no land by walking on it; a place they capture brings its land with
+// it. Damage is applied all at once at the end of a step, so the order
+// squads are processed in does not matter.
 
 import { B } from '../world/biomes.js';
-import { RULES, UNITS, COVER, garrisonMax, guardRadius, STRUCTURES } from './defs.js';
+import { RULES, UNITS, COVER, garrisonMax, landRadius, commandOf, STRUCTURES } from './defs.js';
 
 // Seconds to cross a tile, by biome, at speed 1 (water is sailed instead).
 const MOVE = new Map([
@@ -176,6 +177,13 @@ export function findPath(m, type, start, x, y, maxNodes = 120000) {
   });
 }
 
+/** How many soldiers player `pid` can command: what its towns, ports and outposts allow. */
+export function command(m, pid) {
+  let n = RULES.baseCommand;
+  for (const s of m.state.structures) if (s.owner === pid) n += commandOf(s);
+  return n;
+}
+
 /** Is a structure under siege (rival soldiers close by, recently)? Its gates stay shut. */
 export function besieged(m, s) {
   return m.state.t - (s.siege ?? -99) < 8;
@@ -212,7 +220,10 @@ export function deploy(m, pid, type, n, x, y) {
   if (!(n >= 1)) return { error: 'Send at least one soldier.' };
   if (n > RULES.maxSquad) n = RULES.maxSquad;
   if (x < 0 || y < 0 || x >= m.W || y >= m.H) return { error: 'Outside the map.' };
-  const afford = Math.min(Math.floor(p.gold / u.cost), Math.floor((p.pop - 10) / u.people));
+  const room = command(m, pid) - m.army(pid);
+  if (room < u.people) return { error: `Your realm commands no more soldiers (${Math.round(m.army(pid))} of ${command(m, pid)}). Grow your towns or build outposts for more.` };
+  if (st.squads.filter((q) => q.owner === pid).length >= RULES.maxSquads) return { error: `You lead ${RULES.maxSquads} squads already: send soldiers together, or let squads standing together merge.` };
+  const afford = Math.min(Math.floor(p.gold / u.cost), Math.floor((p.pop - 10) / u.people), Math.floor(room / u.people));
   if (afford < 1) return { error: p.gold < u.cost ? `${u.name} cost ${u.cost} gold each.` : 'Not enough people to raise soldiers.' };
   n = Math.min(n, afford);
   if (!nearLand(m, x, y)) return { error: 'Soldiers need land to stand on: send them to a shore.' };
@@ -477,13 +488,12 @@ export function tick(m, dt) {
       }
       continue;
     }
-    // Holding a post: foot and horse close in on enemies nearby, then return.
-    if (u.range < 2) {
-      const near = nearestEnemy(m, g, sq.owner, sq.x, sq.y, RULES.aggro);
-      if (near && Math.hypot(near.x - sq.post[0], near.y - sq.post[1]) <= RULES.leash) {
-        stepToward(m, sq, near.x, near.y, dt);
-        continue;
-      }
+    // Holding a post: go for enemies that come near (archers and engines
+    // only until they are within reach), but not too far from the post.
+    const near = nearestEnemy(m, g, sq.owner, sq.x, sq.y, Math.max(RULES.aggro, u.range + 2));
+    if (near && Math.hypot(near.x - sq.post[0], near.y - sq.post[1]) <= RULES.leash + u.range) {
+      stepToward(m, sq, near.x, near.y, dt);
+      continue;
     }
     if (Math.hypot(sq.x - sq.post[0], sq.y - sq.post[1]) > 0.3) stepToward(m, sq, sq.post[0], sq.post[1], dt);
   }
@@ -492,7 +502,7 @@ export function tick(m, dt) {
   // Garrisons shoot back.
   for (const s of works) {
     if (s.owner < 0 || !(s.garrison > 0)) continue;
-    const range = s.kind === 'outpost' ? STRUCTURES.outpost.range : s.kind === 'town' && s.level >= 3 ? 3.5 : 2;
+    const range = s.kind === 'outpost' ? STRUCTURES.outpost.range : s.kind === 'town' && s.level >= 3 ? 5 : 3;
     const foe = nearestEnemy(m, g, s.owner, s.x, s.y, range);
     if (!foe) continue;
     const atk = s.kind === 'outpost' ? 0.45 : 0.3;
@@ -519,22 +529,38 @@ export function tick(m, dt) {
   }
 }
 
-/** A structure whose garrison is gone falls to the squad at its gate. */
+/**
+ * A structure whose garrison is gone falls to the squad at its gate, with
+ * its land: the old owner's tiles within its reach that are nearer to it than
+ * to any other of the old owner's places.
+ */
 export function capture(m, s, to) {
   const from = s.owner;
-  const r = guardRadius(s);
+  const r = landRadius(s) + 2;
+  const others = m.state.structures.filter((q) => q !== s && q.owner === from && Math.hypot(q.x - s.x, q.y - s.y) < 2 * r + 2);
   s.owner = to;
   s.capital = false;
   s.garrison = garrisonMax(s) * 0.2;
   s.alarm = m.state.t;
   m.state.structV++;
-  // The land it guarded comes with it.
-  for (const [dx, dy] of disk(r)) {
+  for (const [dx, dy, d] of disk(r)) {
     const x = s.x + dx;
     const y = s.y + dy;
     if (x < 0 || y < 0 || x >= m.W || y >= m.H) continue;
     const i = m.idx(x, y);
-    if (m.land[i] && (m.owner[i] === from || m.owner[i] < 0)) m.setOwner(i, to);
+    if (!m.land[i] || (m.owner[i] !== from && m.owner[i] >= 0)) continue;
+    if (from >= 0 && others.some((q) => Math.hypot(q.x - x, q.y - y) < d)) continue;
+    m.setOwner(i, to);
+  }
+  // And whatever its own buildings and fields stand on.
+  const L = m.layouts.get(s.id);
+  for (const b of L ? [...L.buildings, ...L.fields] : []) {
+    for (let y = b.y; y < b.y + b.h; y++) {
+      for (let x = b.x; x < b.x + b.w; x++) {
+        const i = m.idx(x, y);
+        if (m.land[i] && (m.owner[i] === from || m.owner[i] < 0)) m.setOwner(i, to);
+      }
+    }
   }
   const what = STRUCTURES[s.kind].name.toLowerCase();
   const p = m.state.players[to];
@@ -559,48 +585,6 @@ export function merge(m) {
     }
   }
   if (gone.size) st.squads = st.squads.filter((q) => !gone.has(q.id));
-}
-
-/** Squads claim the land around them (every RULES.claimEvery seconds). */
-export function claim(m) {
-  const st = m.state;
-  const g = grid(m);
-  const guards = new Map(); // owner -> [[x, y, r2], ...]
-  for (const s of st.structures) {
-    if (s.owner < 0) continue;
-    if (!guards.has(s.owner)) guards.set(s.owner, []);
-    const r = guardRadius(s);
-    guards.get(s.owner).push([s.x, s.y, r * r]);
-  }
-  const guarded = (o, x, y) => (guards.get(o) || []).some(([gx, gy, r2]) => (gx - x) * (gx - x) + (gy - y) * (gy - y) <= r2);
-  for (const sq of st.squads) {
-    const u = UNITS[sq.type];
-    if (!u.claim || sq.fighting) continue;
-    sq.cp = Math.min(6, (sq.cp || 0) + u.claim * Math.sqrt(sq.n / 9) * RULES.claimEvery);
-    if (sq.cp < 1) continue;
-    const cx = Math.round(sq.x);
-    const cy = Math.round(sq.y);
-    if (!m.land[m.idx(Math.max(0, Math.min(m.W - 1, cx)), Math.max(0, Math.min(m.H - 1, cy)))]) continue;
-    // Rival land is only taken where no rival soldiers stand nearby.
-    const contested = !!nearestEnemy(m, g, sq.owner, sq.x, sq.y, RULES.contestRadius);
-    for (const [dx, dy] of disk(u.radius)) {
-      if (sq.cp < 1) break;
-      const x = cx + dx;
-      const y = cy + dy;
-      if (x < 0 || y < 0 || x >= m.W || y >= m.H) continue;
-      const i = y * m.W + x;
-      const o = m.owner[i];
-      if (!m.land[i] || o === sq.owner) continue;
-      if (o < 0) {
-        m.setOwner(i, sq.owner);
-        sq.cp -= 1;
-        continue;
-      }
-      if (contested || m.allied(o, sq.owner) || sq.cp < RULES.enemyClaimCost || guarded(o, x, y)) continue;
-      m.setOwner(i, sq.owner);
-      sq.cp -= RULES.enemyClaimCost;
-    }
-  }
 }
 
 /** Gold upkeep of the army; an empty treasury makes soldiers desert. */

@@ -1,14 +1,17 @@
 // Towns, ports and outposts. Each one is a settlement layout from the town
 // planner: a town grows houses, fields and civic buildings as its level
-// rises; a port is a harbour village; an outpost is a walled fort. Each has
-// a garrison; when it is gone, the first rival squad at the gate takes the
-// place and the land it guarded (engine/sim/units.js).
+// rises; a port is a harbour village; an outpost is a walled fort. They are
+// built only on their owner's land, and take more land around them over
+// time (engine/sim/territory.js). Each has a garrison; when it is gone, the
+// first rival squad at the gate takes the place and its land
+// (engine/sim/units.js).
 
-import { createLayout, addBuilding, applyStage, buildWalls, markBlocked } from '../settlement/planner.js';
+import { createLayout, addBuilding, applyStage, buildWalls, markBlocked, N, O } from '../settlement/planner.js';
 import { canFoundAt } from '../world/sites.js';
 import { placeName } from '../world/names.js';
 import { BIOMES } from '../world/biomes.js';
 import { RULES, TOWN_LEVELS, TOWN_PLAN, MAX_TOWN_LEVEL, STRUCTURES, structureCost, upgradeCost, garrisonMax } from './defs.js';
+import { disk } from './units.js';
 
 const LAYOUT_OPS_PER_STEP = 3;
 
@@ -35,29 +38,74 @@ export function create(m, kind, owner, x, y, { capital = false } = {}) {
     garrison: 0,
   };
   s.garrison = garrisonMax(s);
+  // A new place takes the unclaimed land right around it at once.
+  for (const [dx, dy] of disk(4)) {
+    const j = m.idx(Math.max(0, Math.min(m.W - 1, x + dx)), Math.max(0, Math.min(m.H - 1, y + dy)));
+    if (m.land[j] && m.owner[j] === -1) m.setOwner(j, owner);
+  }
   const L = createLayout(m.world, { id, cx: x, cy: y, seed: st.seed, kind: capital ? 'capital' : kind === 'outpost' ? 'outpost' : 'town', blocked: m.struct });
   m.layouts.set(id, L);
   st.structures.push(s);
   m.structAt.set(i, id);
   st.structV++;
   if (kind === 'town') {
-    applyStage(m.world, L, TOWN_LEVELS[1].stage);
+    onOwnLand(m, s, L, () => applyStage(m.world, L, TOWN_LEVELS[1].stage));
     for (let k = 0; k < 3; k++) if (layoutOp(m, s, 'house')) s.houses++;
   } else if (kind === 'port') {
-    applyStage(m.world, L, 1);
+    onOwnLand(m, s, L, () => applyStage(m.world, L, 1));
     for (const b of ['harbor', 'house', 'fishery', 'house', 'house']) layoutOp(m, s, b);
   } else {
     for (const b of ['tower', 'barracks', 'tower', 'house']) layoutOp(m, s, b);
-    buildWalls(m.world, L, 1);
+    onOwnLand(m, s, L, () => buildWalls(m.world, L, 1));
+  }
+  // The planner sets a few pieces down before any land rule applies (a
+  // capital's keep, the first plaza): the unclaimed land under them is the new place's.
+  for (const b of [...L.buildings, ...L.fields]) {
+    for (let y = b.y; y < b.y + b.h; y++) {
+      for (let x = b.x; x < b.x + b.w; x++) {
+        const j = m.idx(x, y);
+        if (m.land[j] && m.owner[j] === -1) m.setOwner(j, owner);
+      }
+    }
   }
   m.layoutChanged(s);
   return s;
 }
 
+/**
+ * Run a planner operation that may only use the owner's land: free land
+ * cells of the layout that belong to someone else (or no one) are held
+ * back while it runs, so buildings, fields and streets stay inside the
+ * border. Water is left alone (piers stand on it).
+ */
+function onOwnLand(m, s, L, fn) {
+  const W = m.W;
+  const held = [];
+  for (let ly = 0; ly < N; ly++) {
+    const wy = L.oy + ly;
+    if (wy < 0 || wy >= m.H) continue;
+    for (let lx = 0; lx < N; lx++) {
+      const wx = L.ox + lx;
+      if (wx < 0 || wx >= W) continue;
+      const k = ly * N + lx;
+      const i = wy * W + wx;
+      if (L.occ[k] === O.FREE && m.land[i] && m.owner[i] !== s.owner) {
+        L.occ[k] = O.DECOR;
+        held.push(k);
+      }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of held) if (L.occ[k] === O.DECOR) L.occ[k] = O.FREE;
+  }
+}
+
 function layoutOp(m, s, kind) {
   const L = m.layouts.get(s.id);
   markBlocked(L, m.struct, m.world);
-  const b = addBuilding(m.world, L, kind);
+  const b = onOwnLand(m, s, L, () => addBuilding(m.world, L, kind));
   m.layoutChanged(s);
   return b;
 }
@@ -141,9 +189,10 @@ export function upgrade(m, pid, sid) {
   m.state.structV++;
   const L = m.layouts.get(s.id);
   markBlocked(L, m.struct, m.world);
-  applyStage(m.world, L, TOWN_LEVELS[s.level].stage);
+  L.failed = {};
+  onOwnLand(m, s, L, () => applyStage(m.world, L, TOWN_LEVELS[s.level].stage));
   const w = TOWN_LEVELS[s.level].walls;
-  if (w) buildWalls(m.world, L, w);
+  if (w) onOwnLand(m, s, L, () => buildWalls(m.world, L, w));
   m.layoutChanged(s);
   m.event(pid, 'grew', `${s.name} is now a ${TOWN_LEVELS[s.level].name.toLowerCase()}.`, s.x, s.y);
   return { ok: true };

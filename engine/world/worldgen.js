@@ -17,6 +17,7 @@ export const WORLD_SIZES = {
   medium: { width: 448, height: 304 },
   large: { width: 576, height: 400 },
   huge: { width: 768, height: 544 },
+  vast: { width: 1024, height: 704 },
 };
 
 const DX4 = [1, -1, 0, 0];

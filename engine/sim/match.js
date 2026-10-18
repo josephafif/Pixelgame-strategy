@@ -58,7 +58,7 @@ export class Match {
   constructor(opts = {}) {
     const seed = opts.seed ?? 1;
     const size = opts.size || 'medium';
-    this.opts = { placementTime: 20, timeLimit: 30 * 60, difficulty: 'normal', ...opts, seed, size };
+    this.opts = { placementTime: 20, timeLimit: 60 * 60, difficulty: 'normal', ...opts, seed, size };
     const dims = WORLD_SIZES[size] || WORLD_SIZES.medium;
     this.world = opts.world || generateWorld({ seed, ...dims });
     this.rng = new Rng(seed ^ 0x5eed);
@@ -392,7 +392,7 @@ export class Match {
       }
     }
     // contacts[p] = [[q, border length, a tile of q's on the border], ...]
-    const out = { tick: this.state.tick, neutral: [], contacts: [], coast: [...coast], labels: this.state.survey?.labels || [] };
+    const out = { tick: this.state.tick, n: (this.state.survey?.n || 0) + 1, neutral: [], contacts: [], coast: [...coast], labels: this.state.survey?.labels || [] };
     for (let p = 0; p < n; p++) {
       ps[p].bbox = bbox[p];
       out.neutral.push([contact[p * N1], sample[p * N1]]);
@@ -400,7 +400,8 @@ export class Match {
       for (let q = 0; q < n; q++) if (contact[p * N1 + q + 1]) c.push([q, contact[p * N1 + q + 1], sample[p * N1 + q + 1]]);
       out.contacts.push(c);
     }
-    if (this.state.tick % Math.round(2 / TICK) < Math.round(1 / TICK) || !out.labels.length) out.labels = this.labelSpots();
+    // Name spots every other survey (the distance transform is the costly part).
+    if (out.n % 2 === 0 || !out.labels.length) out.labels = this.labelSpots();
     this.state.survey = out;
   }
 
@@ -484,15 +485,15 @@ export class Match {
     for (const p of st.players) if (p.alive) this.updatePeople(p, dt);
     units.tick(this, dt);
     units.upkeep(this, dt);
-    if (every(RULES.claimEvery, 2)) units.claim(this);
     if (every(1)) units.merge(this);
-    if (every(RULES.townClaimEvery, 3)) territory.townClaims(this);
+    if (every(RULES.landEvery, 3)) territory.landClaims(this);
     if (every(RULES.annexEvery, 15)) territory.annex(this);
     naval.tick(this, dt);
     structures.tick(this);
+    // Big maps are surveyed every other second: a survey reads every tile.
+    if (every(this.W * this.H > 400000 ? 2 : 1, 5)) this.survey();
     if (every(1)) {
       diplomacy.tick(this);
-      this.survey();
       this.checkVictory();
     }
     for (const p of st.players) {

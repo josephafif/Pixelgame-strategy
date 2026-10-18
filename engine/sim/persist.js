@@ -10,7 +10,7 @@ import { rle, unrle } from '../core/rle.js';
 import { mix32 } from '../core/rng.js';
 
 export const SAVE_FORMAT = 'realmwright-save';
-export const SAVE_VERSION = 4; // 4: soldiers that march (squads), garrisons
+export const SAVE_VERSION = 5; // 5: land from settlements, command limits
 
 /** A cheap fingerprint of the generated world, to reject mismatched saves. */
 export function worldFingerprint(world) {

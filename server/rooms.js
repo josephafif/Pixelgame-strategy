@@ -8,11 +8,11 @@ import { TICK } from '../engine/sim/defs.js';
 import { PlayerView, initMessage } from '../engine/net/protocol.js';
 import { saveMatch, loadMatch } from '../engine/sim/persist.js';
 
-const SIZES = ['small', 'medium', 'large', 'huge'];
+const SIZES = ['small', 'medium', 'large', 'huge', 'vast'];
 const MAX_PLAYERS = 8;
-const MAX_AIS = 24;
+const MAX_AIS = 30;
 const SEND_EVERY = 2; // ticks between snapshots (0.2 s)
-export const DEFAULT_AIS = { small: 6, medium: 10, large: 16, huge: 24 };
+export const DEFAULT_AIS = { small: 6, medium: 10, large: 16, huge: 24, vast: 30 };
 const MAX_BACKLOG = 1 << 20;
 
 export function sanitizeName(name) {
@@ -28,7 +28,7 @@ export function sanitizeOpts(o = {}, prev = {}) {
     size,
     ais: num(o.ais ?? prev.ais, prev.ais ?? DEFAULT_AIS[size], 0, MAX_AIS),
     placementTime: num(o.placementTime ?? prev.placementTime, prev.placementTime ?? 20, 10, 120),
-    timeLimit: num(o.timeLimit ?? prev.timeLimit, prev.timeLimit ?? 30, 5, 60),
+    timeLimit: num(o.timeLimit ?? prev.timeLimit, prev.timeLimit ?? 60, 5, 180),
     difficulty: ['easy', 'normal', 'hard'].includes(o.difficulty) ? o.difficulty : prev.difficulty || 'normal',
   };
 }

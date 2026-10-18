@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Match } from '../engine/sim/match.js';
-import { TICK, RULES, TOWN_LEVELS, UNITS, structureCost, garrisonMax, guardRadius } from '../engine/sim/defs.js';
+import { TICK, RULES, TOWN_LEVELS, UNITS, structureCost, garrisonMax, landRadius } from '../engine/sim/defs.js';
 import { create as createStructure } from '../engine/sim/structures.js';
-import { findPath, landPart } from '../engine/sim/units.js';
+import { findPath, landPart, command } from '../engine/sim/units.js';
 import { PlayerView, applyDelta, unrle } from '../engine/net/protocol.js';
 import { validateLayout } from '../engine/settlement/validate.js';
 import { generateWorld, WORLD_SIZES } from '../engine/world/worldgen.js';
@@ -87,7 +87,7 @@ test('starting claims land around a hamlet with a small army at its gate', () =>
   const m = twoPlayers();
   for (const p of m.state.players) {
     assert.ok(p.spawned && p.alive);
-    assert.ok(p.tiles > 60 && p.tiles <= 130, `${p.name} starts with ${p.tiles} tiles`);
+    assert.ok(p.tiles > 40 && p.tiles <= 130, `${p.name} starts with ${p.tiles} tiles`);
     const town = home(m, p.id);
     assert.equal(town.kind, 'town');
     assert.ok(town.capital);
@@ -149,6 +149,14 @@ test('soldiers are raised at the nearest town or outpost and march where they ar
   // Too poor for more.
   p.gold = 5;
   assert.match(m.exec(0, { type: 'deploy', unit: 'knight', n: 5, x: to.x, y: to.y }).error, /gold each/);
+  // No more than the realm can command, however rich.
+  p.gold = 1e6;
+  p.pop = 1e5;
+  const room = command(m, 0) - m.army(0);
+  const big = m.exec(0, { type: 'deploy', unit: 'shield', n: 200, x: to.x, y: to.y });
+  assert.equal(big.n, room, 'raised up to the command limit');
+  assert.match(m.exec(0, { type: 'deploy', unit: 'shield', n: 5, x: to.x, y: to.y }).error, /commands no more/);
+  m.state.squads = m.state.squads.filter((q) => q.id !== big.id);
   // An outpost becomes the nearer source.
   p.gold = 5000;
   claim(m, 0, to.x, to.y, 8);
@@ -164,24 +172,43 @@ test('soldiers are raised at the nearest town or outpost and march where they ar
   assert.match(m.exec(1, { type: 'move', ids: [sq.id], x: 1, y: 1 }).error, /No soldiers/);
 });
 
-test('soldiers claim unclaimed land around them; riders faster than spearmen', () => {
+test('land comes from settlements, which take the unclaimed land in their reach; soldiers take none', () => {
   const m = twoPlayers();
   const town = home(m, 0);
-  const at = openGround(m, town.x, town.y, 20, 40);
-  // Clear a patch of wild land and stand a squad of each kind in it.
-  const tiles = (pid) => m.state.players[pid].tiles;
-  const before = tiles(0);
-  const a = squad(m, 0, 'rider', 12, at.x, at.y);
-  run(m, 3);
-  const riders = tiles(0) - before;
-  assert.ok(riders > 8, `riders claimed ${riders}`);
-  m.state.squads = m.state.squads.filter((q) => q !== a);
-  const at2 = openGround(m, town.x, town.y, 45, 80);
-  const before2 = tiles(0);
-  squad(m, 0, 'shield', 12, at2.x, at2.y);
-  run(m, 3);
-  const spears = tiles(0) - before2;
-  assert.ok(spears > 0 && spears < riders, `spears ${spears} < riders ${riders}`);
+  const p = m.state.players[0];
+  // Soldiers standing on wild land and on a rival's land take nothing.
+  const wild = openGround(m, town.x, town.y, 25, 60, -1);
+  squad(m, 0, 'rider', 30, wild.x, wild.y);
+  const rival = home(m, 1);
+  const before = m.state.players[1].tiles;
+  squad(m, 0, 'knight', 30, rival.x + 4, rival.y);
+  m.state.squads = m.state.squads.filter((q) => q.owner !== 1);
+  rival.garrison = 0;
+  run(m, 10);
+  assert.equal(m.owner[m.idx(wild.x, wild.y)], -1, 'wild land stays wild under soldiers');
+  assert.ok(m.state.players[1].tiles >= before, 'and so does a rival\'s');
+  // The town takes the land in its reach, and nothing beyond it.
+  const r = landRadius(town);
+  const t0 = p.tiles;
+  run(m, 60);
+  assert.ok(p.tiles > t0, `the town took land (${t0} -> ${p.tiles})`);
+  const under = new Set(); // what our buildings and fields stand on
+  for (const s of m.state.structures.filter((q) => q.owner === 0)) {
+    const L = m.layouts.get(s.id);
+    for (const b of [...L.buildings, ...L.fields]) for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) under.add(m.idx(x, y));
+  }
+  for (let i = 0; i < m.owner.length; i++) {
+    if (m.owner[i] !== 0 || under.has(i)) continue;
+    const near = m.state.structures.some((s) => s.owner === 0 && Math.hypot((i % m.W) - s.x, ((i / m.W) | 0) - s.y) <= Math.max(r, RULES.spawnRadius) + 0.8);
+    assert.ok(near, 'all our land lies in reach of one of our places');
+  }
+  // A bigger town reaches further.
+  p.gold = 1e5;
+  assert.ok(m.exec(0, { type: 'upgrade', sid: town.id }).ok);
+  assert.ok(landRadius(town) > r);
+  const t1 = p.tiles;
+  run(m, 30);
+  assert.ok(p.tiles > t1, 'a village reaches further');
 });
 
 test('soldiers walk round lakes and bays on their own land, and sail only to other land', () => {
@@ -247,39 +274,29 @@ test('counters: riders run down archers, spears stop riders', () => {
   assert.ok(m.state.players[1].stats.lostSoldiers > 15);
 });
 
-test('rival land is taken only where no rival soldiers or buildings guard it', () => {
+test('idle soldiers go for enemies that come near; archers shoot from afar', () => {
   const m = twoPlayers();
-  const town = home(m, 1);
-  claim(m, 1, town.x, town.y, 26);
-  const r = guardRadius(town);
-  // Inside the town's guard: nothing changes hands.
-  const inside = squad(m, 0, 'rider', 30, town.x + r - 2, town.y);
-  inside.x = town.x + 3;
-  run(m, 3);
-  for (let dx = -2; dx <= 2; dx++) assert.equal(m.owner[m.idx(town.x + 3 + dx, town.y)], 1);
-  m.state.squads = m.state.squads.filter((q) => q !== inside);
-  // Outside it, unguarded: taken.
-  const far = openGround(m, town.x, town.y, r + 5, 25, 1);
-  const taker = squad(m, 0, 'rider', 30, far.x, far.y);
-  const before = m.state.players[0].tiles;
-  run(m, 3);
-  assert.ok(m.state.players[0].tiles > before, 'unguarded rival land was taken');
-  m.state.squads = m.state.squads.filter((q) => q !== taker);
-  // With a rival squad nearby it is contested.
-  const near = openGround(m, far.x, far.y, 10, 25, 1);
-  const theirs = squad(m, 1, 'shield', 5, near.x, near.y);
-  const mine = squad(m, 0, 'rider', 30, near.x + 3, near.y);
-  const own = m.state.players[1].tiles;
+  const town = home(m, 0);
+  const at = openGround(m, town.x, town.y, 25, 60);
+  const spears = squad(m, 0, 'shield', 20, at.x, at.y);
+  const foe = squad(m, 1, 'shield', 10, at.x + 6, at.y);
+  run(m, 6);
+  assert.ok(Math.hypot(spears.x - at.x, spears.y - at.y) > 2, 'the spears went for them');
+  assert.ok(!m.state.squads.includes(foe) || foe.n < 10, 'and fought');
+  // Longbows hit from eight tiles away without moving in.
+  m.state.squads = m.state.squads.filter((q) => q !== spears && q !== foe);
+  const bows = squad(m, 0, 'bow', 20, at.x, at.y);
+  const target = squad(m, 1, 'knight', 5, at.x + 7.5, at.y);
   run(m, 1);
-  assert.ok(m.state.squads.includes(theirs) && m.state.squads.includes(mine));
-  assert.ok(m.state.players[1].tiles >= own - 2, 'no land changes hands while it is defended');
+  assert.ok(target.n < 5, 'hit from afar');
+  assert.ok(Math.hypot(bows.x - at.x, bows.y - at.y) < 1, 'without moving in');
 });
 
 test('a town falls when its garrison is gone and soldiers reach its gate', () => {
   const m = twoPlayers();
   const town = home(m, 1);
-  claim(m, 1, town.x, town.y, guardRadius(town) + 2);
-  const r = guardRadius(town);
+  claim(m, 1, town.x, town.y, landRadius(town) + 2);
+  const r = landRadius(town);
   m.state.squads = m.state.squads.filter((q) => q.owner !== 1);
   // Trebuchets out of reach of the walls, then spears to the gate.
   const at = openGround(m, town.x, town.y, 6, 7);
@@ -425,6 +442,12 @@ test('towns grow by themselves and can be raised to a walled city', () => {
   assert.ok(L.walls && L.walls.level >= 2, 'a city has stone walls');
   run(m, 120);
   assert.ok(validateLayout(m.world, L).ok);
+  // Every building stands on its owner's land.
+  for (const s2 of m.state.structures) {
+    for (const b of m.layouts.get(s2.id).buildings) {
+      for (let y = b.y; y < b.y + b.h; y++) for (let x = b.x; x < b.x + b.w; x++) assert.equal(m.owner[m.idx(x, y)], s2.owner, `${b.kind} of ${s2.name} at ${x},${y} is inside the border`);
+    }
+  }
   const theirs = home(m, 1);
   assert.match(m.exec(0, { type: 'build', kind: 'town', x: theirs.x + 3, y: theirs.y }).error, /own land/);
 });
@@ -465,16 +488,18 @@ test('victory: the first to hold 80% of the land wins; otherwise the most land w
   assert.deepEqual(t.state.winner, { kid: 1, how: 'time' });
 });
 
-test('AI players claim land, build, raise armies and fight', { timeout: 180000 }, () => {
+test('AI players found towns and outposts to take land, raise armies within their limits and fight', { timeout: 180000 }, () => {
   const m = new Match({ seed: 5, size: 'small', world: generateWorld({ seed: 5, ...WORLD_SIZES.small }), placementTime: 0.2, players: Array.from({ length: 6 }, () => ({ ai: true })) });
-  run(m, 420);
+  run(m, 900);
   const st = m.state;
   assert.ok(st.players.every((p) => p.spawned));
   const held = st.players.reduce((t, p) => t + p.tiles, 0);
-  assert.ok(held > m.landTotal * 0.7, `claimed ${Math.round((held / m.landTotal) * 100)}% of the land`);
+  assert.ok(held > m.landTotal * 0.15, `claimed ${Math.round((held / m.landTotal) * 100)}% of the land`);
   assert.ok(st.structures.filter((s) => s.kind === 'town').length > st.players.length, 'new towns');
-  assert.ok(st.players.every((p) => p.stats.raised > 20), 'every AI raised soldiers');
-  assert.ok(st.players.reduce((t, p) => t + p.stats.lostSoldiers, 0) > 100, 'they fought');
+  assert.ok(st.structures.filter((s) => s.kind === 'outpost').length >= st.players.length, 'outposts');
+  for (const p of st.players) assert.ok(m.army(p.id) <= command(m, p.id) + 1, `${p.name} keeps within its command`);
+  assert.ok(st.players.filter((p) => p.stats.raised > 10).length >= 3, 'AIs raised soldiers');
+  assert.ok(st.players.reduce((t, p) => t + p.stats.lostSoldiers, 0) > 20, 'they fought');
   for (const s of st.structures) assert.ok(validateLayout(m.world, m.layouts.get(s.id)).ok, `${s.name} layout valid`);
 });
 

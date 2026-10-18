@@ -14,7 +14,9 @@ export class PaintPool {
     this.workers = [];
     this.ok = typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined' && typeof OffscreenCanvas.prototype.transferToImageBitmap === 'function';
     if (!this.ok) return;
-    const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1));
+    // Phones keep cores free for the page and the simulation.
+    const touch = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+    const n = Math.max(1, Math.min(touch ? 2 : 3, (navigator.hardwareConcurrency || 2) - 1));
     try {
       for (let i = 0; i < n; i++) {
         const w = new Worker(new URL('./paint-worker.js', import.meta.url), { type: 'module' });

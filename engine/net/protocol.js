@@ -4,7 +4,8 @@
 // Gold is private; everything else (soldiers included) is public.
 
 import { serializeLayout } from '../settlement/planner.js';
-import { STRUCTURE_KINDS, structureCost, upgradeCost, MAX_TOWN_LEVEL, RULES, garrisonMax, guardRadius } from '../sim/defs.js';
+import { STRUCTURE_KINDS, structureCost, upgradeCost, MAX_TOWN_LEVEL, RULES, garrisonMax, landRadius } from '../sim/defs.js';
+import { command } from '../sim/units.js';
 import { rle } from '../core/rle.js';
 
 export { rle, unrle } from '../core/rle.js';
@@ -65,7 +66,7 @@ function publicPlayer(m, p) {
 function privatePlayer(m, p) {
   const costs = {};
   for (const k of STRUCTURE_KINDS) costs[k] = structureCost(k, p.built[k]);
-  return { gold: Math.floor(p.gold), goldRate: round(p.goldRate, 10), upkeep: round(p.upkeep || 0, 10), costs, stats: p.stats };
+  return { gold: Math.floor(p.gold), goldRate: round(p.goldRate, 10), upkeep: round(p.upkeep || 0, 10), command: command(m, p.id), costs, stats: p.stats };
 }
 
 /** The snapshot for player `kid` (kid = -1: spectator). */
@@ -78,7 +79,7 @@ export function snapshot(m, kid) {
     return o;
   });
   const structures = st.structures.map((s) => {
-    const o = { id: s.id, kind: s.kind, owner: s.owner, x: s.x, y: s.y, level: s.level, name: s.name, capital: s.capital, layoutV: s.layoutV, garrison: Math.ceil(s.garrison), gmax: garrisonMax(s), guard: guardRadius(s) };
+    const o = { id: s.id, kind: s.kind, owner: s.owner, x: s.x, y: s.y, level: s.level, name: s.name, capital: s.capital, layoutV: s.layoutV, garrison: Math.ceil(s.garrison), gmax: garrisonMax(s), land: landRadius(s) };
     if (s.owner === kid && s.kind === 'town' && s.level < MAX_TOWN_LEVEL) o.upgrade = upgradeCost(s.level);
     return o;
   });

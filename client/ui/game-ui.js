@@ -190,7 +190,7 @@ export class GameUI {
       setText(el.land, pct(this.cw.share(this.cw.you)));
       setText(el.pop, fmt(me.pop));
       el.pop.parentElement.style.setProperty('--fill', `${Math.min(100, (me.pop / Math.max(1, me.maxPop)) * 100).toFixed(0)}%`);
-      setText(el.army, fmt(me.army));
+      setText(el.army, me.command ? `${fmt(me.army)}/${fmt(me.command)}` : fmt(me.army));
       setText(el.gold, `${fmt(me.gold)}${me.goldRate !== undefined ? ` +${fmt(Math.max(0, me.goldRate - (me.upkeep || 0)))}` : ''}`);
       for (const b of el.build.querySelectorAll('[data-cost]')) {
         const c = me.costs?.[b.dataset.cost] ?? 0;
@@ -597,7 +597,7 @@ export class GameUI {
         parts.push(`<div class="pbtns">${btns.join('')}</div>`);
       }
     } else if (cw.isLand(x, y)) {
-      parts.push('<div class="ph"><b>Unclaimed land</b></div><div class="pr"><span>Soldiers standing here claim it.</span></div>');
+      parts.push('<div class="ph"><b>Unclaimed land</b></div><div class="pr"><span>A town or outpost near it takes it in time.</span></div>');
     } else parts.push('<div class="ph"><b>Open water</b></div><div class="pr"><span>Soldiers sail across it on their own.</span></div>');
     // Your own buildings and land.
     const s = cw.structureAt(x + 0.5, y + 0.5, 3);
@@ -655,7 +655,7 @@ export class GameUI {
     const x = Math.floor(t.x);
     const y = Math.floor(t.y);
     if (this.mode) {
-      this.r.preview = { x, y, ok: this.cw.ownerAt(x, y) === this.cw.you, radius: this.mode === 'outpost' ? STRUCTURES.outpost.guard : 0 };
+      this.r.preview = { x, y, ok: this.cw.ownerAt(x, y) === this.cw.you, radius: this.mode === 'town' ? TOWN_LEVELS[1].land : STRUCTURES[this.mode]?.land || 0 };
       this.el.tip.hidden = true;
       return;
     }
@@ -827,6 +827,7 @@ export class GameUI {
       return t;
     };
     this.on(canvas, 'pointerdown', (e) => {
+      this.r.inputAt = performance.now();
       canvas.setPointerCapture(e.pointerId);
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       this.vel = null;
@@ -871,7 +872,10 @@ export class GameUI {
       }
     });
     this.on(canvas, 'pointermove', (e) => {
-      if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.has(e.pointerId)) {
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        this.r.inputAt = performance.now();
+      }
       if (pinch && pts.size >= 2) {
         const now = twoFinger();
         this.r.cam.x -= (now.x - pinch.x) / this.r.cam.ppt;

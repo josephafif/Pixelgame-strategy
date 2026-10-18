@@ -18,8 +18,9 @@ This document explains how the game works and why it is built the way it is. Num
   files. `client/` adds rendering and UI. Settlement layouts are gameplay data (they decide where
   buildings stand); the client turns them into pixel art.
 
-The game is a race for land played with soldiers you can see: you raise squads of five kinds, march
-them where you want, and they hold the land they stand on. The map-wide race is in the spirit of
+The game is a slow race for land: settlements take the land around them, so a realm spreads by
+founding towns and outposts and growing its towns, and wars are fought with squads of five kinds
+you can see, marched where you want, over the places that hold the land. The map-wide race is in the spirit of
 OpenFront and raising troops by dropping them on the map in the spirit of Clash of Clans, without
 copying the look, code or numbers of either. What is Realmwright's own are the towns, which grow as
 generated pixel-art settlements with villagers at work.
@@ -30,53 +31,57 @@ Every land tile has an owner (`Int16Array`, −1 for nobody). `setOwner` is the 
 hands; it keeps tile counts and bounding boxes and appends the tile to a change log for the clients.
 
 Starting: each player picks open land at least 18 tiles from other realms. They get the land within
-6 tiles that can be walked to from there (never across water), a hamlet, 300 people, 250 gold and an
-army at the gate (12 Shieldbearers, 6 Longbows, 6 Outriders). Players who do not choose in time, and
+5 tiles that can be walked to from there (never across water), a hamlet, 300 people, 400 gold and an
+army at the gate (8 Shieldbearers, 4 Longbows, 3 Outriders). Players who do not choose in time, and
 all AIs, get spread-out spots.
 
-Land changes hands in four ways:
+Land comes from settlements, never from soldiers walking on it. It changes hands in these ways:
 
-- **Soldiers claim it** (`units.claim`, every 0.5 s). A squad earns claim points (its kind's rate ×
-  √(soldiers / 9), at most 6 banked) and spends them on the tiles within its radius, nearest first:
-  1 point for an unclaimed tile, 3 for a rival's. A rival's tile is only taken when no rival soldiers
-  stand within 5 tiles of the squad and no rival town, port or outpost guards it (towns guard
-  5 + 2 × level tiles, ports 4, outposts 8). Squads in a fight claim nothing; allies never take each
-  other's land.
-- **Towns claim** a little unclaimed land around them every second (1 + level tiles within
-  4 + 2 × level).
-- **Annexing** (every 3 s): a connected area whose only land neighbour is one realm becomes theirs: an
-  unclaimed one up to 4,000 tiles, a rival one up to 300 tiles with no building and no soldiers of its
-  own.
+- **Settlements take it** (`territory.landClaims`, every second): each town, port and outpost takes
+  the unclaimed land within its reach, nearest first: a town as many tiles a second as its level,
+  within 7 / 10 / 13 / 16 tiles (hamlet / village / town / city); an outpost one a second within 7; a
+  port one within 5. A new place takes the unclaimed land within 4 tiles at once, and the land under
+  its first buildings. A place with nothing left to take looks again every 15 s.
 - **Capture**: a town, port or outpost whose garrison is gone falls to the first soldiers at its gate,
-  and the land it guarded comes with it.
+  with its land: the old owner's tiles within its reach (+2) that are nearer to it than to any other
+  of the old owner's places, and whatever its buildings and fields stand on.
+- **Annexing** (every 10 s): a connected area whose only land neighbour is one realm becomes theirs: an
+  unclaimed one up to 300 tiles, a rival one up to 120 tiles with no building and no soldiers of its
+  own.
+- A realm that falls leaves its land to the wilds.
 
-Once a second, `survey()` scans the map: who borders whom and how long each border is (with one
-sample tile per border, which the AI uses as a target), how much unclaimed land each realm touches,
-coast lengths and exact bounding boxes. Every two seconds a two-pass chamfer distance transform finds,
-for each realm, the point deepest inside its land; the client writes the realm's name there, sized by
-that depth. The survey is part of the saved state, so a loaded game makes the same decisions.
+`survey()` scans the map every second (every other second on maps over 400,000 tiles): who borders
+whom and how long each border is (with one sample tile per border, which the AI uses as a target),
+how much unclaimed land each realm touches, coast lengths and exact bounding boxes. Every other survey
+a two-pass chamfer distance transform finds, for each realm, the point deepest inside its land; the
+client writes the realm's name there, sized by that depth. The survey is part of the saved state, so
+a loaded game makes the same decisions. Periodic work (merging, land claims, annexing, the survey)
+runs on different ticks, so no single tick does all of it.
 
 ## People and gold
 
 - **Limit:** 300 + 0.5 per tile + 250 / 500 / 900 / 1,400 for each hamlet / village / town / city.
-- **Growth** is logistic (4% per second at low numbers, slowing toward the limit). Above the limit
+- **Growth** is logistic (2.5% per second at low numbers, slowing toward the limit). Above the limit
   people drift back down.
-- **Gold:** 0.009 per person per second plus 1 per town level per second, plus trade.
+- **Gold:** 0.008 per person per second plus 1 per town level per second, plus trade.
 - **Soldiers** cost gold and people (one each, four for a trebuchet's crew) when they are raised, and
-  upkeep while they live: 0.18% of their price per second each. When the treasury runs dry, 1% of
+  upkeep while they live: 0.15% of their price per second each. When the treasury runs dry, 1% of
   every squad deserts each second.
+- **Command:** a realm can only have so many soldiers: 10, plus 30 / 50 / 80 / 120 for each hamlet /
+  village / town / city (+20 for the capital), 25 for each outpost and 10 for each port. And at most 30
+  separate squads. Raising more is refused, for AIs too.
 
 ## Soldiers (`units.js`)
 
 A squad is a group of soldiers of one kind: `{ owner, type, n, x, y, post, path, state }`.
 
-| | Cost | HP | Attack/s | Range | Speed | Claims/s | Strong against |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Shieldbearers | 10 | 10 | 1 | 1.4 | 1.1 | 3 | riders ×1.7, knights ×1.4 |
-| Longbows | 14 | 6 | 0.9 | 5 | 1.1 | 2.4 | shields ×1.4 |
-| Outriders | 22 | 9 | 1.1 | 1.4 | 2.4 | 7 | bows ×1.8, trebuchets ×2 |
-| Knights | 45 | 22 | 2.4 | 1.4 | 1.7 | 3 | bows ×1.6, shields ×1.2, trebuchets ×2 |
-| Trebuchets | 120 | 30 | 0.4 | 7 | 0.6 | – | garrisons ×25 |
+| | Cost | HP | Attack/s | Range | Speed | Strong against |
+| --- | --- | --- | --- | --- | --- | --- |
+| Shieldbearers | 30 | 10 | 1 | 1.4 | 1.1 | riders ×1.7, knights ×1.4 |
+| Longbows | 40 | 6 | 0.9 | 8 | 1.1 | shields ×1.4 |
+| Outriders | 60 | 9 | 1.1 | 1.4 | 2.4 | bows ×1.8, trebuchets ×2 |
+| Knights | 120 | 22 | 2.4 | 1.4 | 1.7 | bows ×1.6, shields ×1.2, trebuchets ×2 |
+| Trebuchets | 320 | 30 | 0.4 | 12 | 0.6 | garrisons ×25 |
 
 Speeds are tiles per second on grass; forests, hills, marsh, snow and rivers are slower and peaks
 impassable.
@@ -94,15 +99,17 @@ impassable.
   slightly imperfect routes. Squads sent together share the long march: the farthest searches the
   whole way, the others only walk onto its road (within 20 tiles) and off it to their own spot.
 - **Orders** (`move`, `stop`): selected squads are sent to a point and spread around it in a spiral.
-  At the end of a march a squad holds that spot as its post. Foot and horse close in on enemies within
-  3 tiles but never stray more than 5 from their post; then they walk back.
+  At the end of a march a squad holds that spot as its post. Holding a post, a squad goes for enemies
+  that come within 8 tiles by itself (archers and trebuchets only until they are in range), but no
+  further than 12 tiles (plus its range) from its post; then it walks back. A squad on the march stops
+  to fight whatever comes within its range.
 - **Combat** happens every step: each squad hits the nearest hostile squad in range (damage =
   soldiers × attack × the counter multiplier × the target's cover, divided by the target's HP), or else
   a hostile town, port or outpost in reach. Damage is collected first and applied at the end of the
   step, so the order squads are processed in does not matter. Cover: forests and taiga ×0.8, hills
   ×0.75, mountains ×0.65, marsh ×1.1, rivers ×1.25, on the water ×1.3. A traitor takes more.
-- **Garrisons** shoot back: an outpost's 0.45 per garrison soldier per second within 5 tiles, a
-  town's 0.3 within 2 (3.5 for a walled town or city). Outposts and walled towns take ×0.6
+- **Garrisons** shoot back: an outpost's 0.45 per garrison soldier per second within 7 tiles, a
+  town's 0.3 within 3 (5 for a walled town or city). Outposts and walled towns take ×0.6
   damage. A garrison refills at 0.35 soldiers per second when it has not been hit
   for 6 s and is not under siege.
 - **Merging:** idle squads of one owner and kind within 2.5 tiles become one (checked every second),
@@ -116,16 +123,19 @@ route (×1.5 between allies). Routes are cached.
 
 ## Towns, ports and outposts (`structures.js`)
 
-The only buildings. Each is a settlement layout from the planner.
+The only buildings. Each is a settlement layout from the planner, built on its owner's land.
 
-| | Cost (grows with each one built) | Garrison | What it does |
-| --- | --- | --- | --- |
-| Town | 400 gold (×1.45) | 25 / 45 / 70 / 100 by level (+20 for the capital) | More people and gold; grows itself, can be raised |
-| Port | 500 gold (×1.5) | 20 | Must stand on the coast; sends trade ships |
-| Outpost | 250 gold (×1.35) | 40 | Archers in its towers; guards 8 tiles |
+| | Cost (grows with each one built) | Garrison | Land within | Commands | What it does |
+| --- | --- | --- | --- | --- | --- |
+| Town | 600 gold (×1.2) | 25 / 45 / 70 / 100 by level (+20 for the capital) | 7 / 10 / 13 / 16 | 30 / 50 / 80 / 120 (+20) | Land, people and gold; grows itself, can be raised |
+| Port | 600 gold (×1.3) | 20 | 5 | 10 | Must stand on the coast; sends trade ships |
+| Outpost | 350 gold (×1.15) | 40 | 7 | 25 | Archers in its towers |
 
 All three raise soldiers. Towns must be 12 tiles apart, and all structures 6 tiles apart. Raising a
-town costs 300 × level × 1.5^(level−1) gold. A town goes from hamlet to village, town and city, which
+town costs 500 × level × 1.5^(level−1) gold. Every planner operation (a house, a field, a street, a
+new stage, walls) may only use the owner's land: the layout's free land cells that belong to someone
+else, or to no one, are held back while it runs, so the town never builds outside its border. When a
+town takes new land it may try again where it had run out of room. A town goes from hamlet to village, town and city, which
 is planner stages 1–4: palisade walls at town level and stone walls at city level. Houses and civic
 buildings (fields, a lumber camp, a quarry, a market, a temple, a granary, a tavern…) go up on their
 own, a few planner operations per step across all towns. A port is a harbour village; an outpost is a
@@ -145,28 +155,30 @@ more damage, and AIs favour them as targets.
 
 - holding 80% of all land;
 - being the last realm standing;
-- holding the most land when the time limit (30 minutes by default) runs out.
+- holding the most land when the time limit (60 minutes by default, up to 180) runs out.
 
-With soldiers on foot, land is won more slowly than in a pure territory game. Headless AI matches
-(`npm run simulate`) usually reach the time limit with the leader holding 10–30% of the map, after
-dozens of towns have changed hands.
+The game is meant to be slow: with land only from settlements and armies limited by command, a
+headless 10-AI match on the medium map (`npm run simulate`) has about 13% of the land claimed after
+10 minutes and 40% after 30, with a few dozen towns and outposts changing hands in 40 minutes.
 
 ## AI (`engine/ai/ai.js`)
 
 Each AI thinks once a second, staggered across ticks, and issues ordinary commands (at most four
-deploy or move orders per think, since each finds a path). Every squad it owns has a role:
+deploy or move orders per think, since each finds a path), under the same limits on soldiers and
+squads as a human. Every squad it owns has a role (guard or strike):
 
 1. **Diplomacy:** answer alliance requests (strong neighbours are welcome, warlords refuse prey,
    nobody allies with a traitor), ask much stronger neighbours, renew alliances worth keeping, and
    (warlords only) break one with a weak ally when nothing else is left to take.
 2. **Defence:** when a rival column comes within reach of one of its places, it raises reinforcements
    there and pulls nearby squads in.
-3. **Spending** (when not under threat): new towns placed deep inside its land, raising towns, ports
-   on the coast, outposts facing the most dangerous neighbour.
-4. **Claimers:** small rider squads roam the unclaimed land nearby.
-5. **Guards:** shields and bows stand at the towns and outposts that face the most dangerous
+3. **Spending** (when not under threat): while unclaimed land borders the realm, a new town (or, for
+   less gold, an outpost) at the spot on its own land with the most unclaimed land in reach (spots
+   are tried around the rim of each place's land); then raising towns, ports on the coast, outposts
+   facing the most dangerous neighbour.
+4. **Guards:** shields and bows stand at the towns and outposts that face the most dangerous
    neighbour.
-6. **Campaigns:** when its strength (squads plus garrisons) beats the nearest place of a rival by its
+5. **Campaigns:** when its strength (squads plus garrisons) beats the nearest place of a rival by its
    temperament's margin, it picks that town or outpost, gathers a mixed army (with trebuchets) at a
    staging point eleven tiles out, assaults it, and moves on to the next target after a capture.
 
@@ -259,9 +271,13 @@ No image assets are used.
 - **Sprites** (`atlas.js`): soldiers, villagers, chips, count badges and name tags are small finished
   canvases, cached with a mirrored copy, so nothing is flipped, measured or written as text per frame.
   (One shared sprite sheet would be slower: browsers copy a canvas that changed before drawing from it.)
+- **Frame rate.** At most 60 frames a second (many phones refresh at 120), and on touch screens 30
+  once the map has been left alone for 1.5 s; touching, panning or zooming brings back 60.
 - **Resolution.** Drawing is capped at 2 device pixels per CSS pixel. A device that averages under
   about 38 frames per second over two seconds drops to 1.5x, then 1x (enlarged by the browser in whole
-  steps, pixel-sharp). `?dpr=1|1.5|2` fixes it.
+  steps, pixel-sharp), judged by how late frames come against the rate asked for. `?dpr=1|1.5|2`
+  fixes it. Phones get two paint workers instead of three, and background painting stays within ten
+  chunks of the view.
 - **Villagers** (`workers.js`, from 12 pixels per tile): every town shows a few people at work, planned once per layout version
   from the layout itself: woodcutters at the nearest trees to the lumber camp, miners at the quarry's
   rocks, farmers in the fields, fishers on the piers, and porters (about a third) walking the streets

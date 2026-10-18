@@ -1,24 +1,36 @@
-// Land that changes hands without a fight: towns slowly claim the empty
-// land around them, and pockets enclosed by one realm are annexed (empty
-// ones up to a size, small rival ones without buildings or soldiers).
+// How land changes hands without a fight. Land comes from settlements:
+// every town, port and outpost slowly takes the unclaimed land within its
+// reach (further as a town grows), nearest first; soldiers take no land by
+// walking on it. Pockets enclosed by one realm are annexed (small empty ones,
+// and small rival ones without buildings or soldiers).
 
-import { RULES } from './defs.js';
+import { RULES, landRadius } from './defs.js';
 import { disk } from './units.js';
 
-/** Each town claims a little unclaimed land nearby, nearest first. */
-export function townClaims(m) {
+/** Each place takes a little of the unclaimed land within its reach, nearest first. */
+export function landClaims(m) {
+  const t = m.state.t;
   for (const s of m.state.structures) {
-    if (s.kind !== 'town' || s.owner < 0) continue;
-    let left = 1 + s.level;
-    for (const [dx, dy] of disk(4 + 2 * s.level)) {
-      if (left <= 0) break;
+    if (s.owner < 0 || t < (s.landNext ?? 0)) continue;
+    let left = s.kind === 'town' ? s.level : 1;
+    let took = 0;
+    for (const [dx, dy] of disk(landRadius(s))) {
       const x = s.x + dx;
       const y = s.y + dy;
       if (x < 0 || y < 0 || x >= m.W || y >= m.H) continue;
       const i = y * m.W + x;
       if (!m.land[i] || m.owner[i] !== -1) continue;
+      if (took >= left) break;
       m.setOwner(i, s.owner);
-      left--;
+      took++;
+    }
+    // Nothing (more) to take: look again in a while (land can fall back to the wilds).
+    if (took < left) s.landNext = t + 15;
+    if (took) {
+      // New land to build on.
+      s.full = false;
+      const L = m.layouts.get(s.id);
+      if (L) L.failed = {};
     }
   }
 }
