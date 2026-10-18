@@ -18,7 +18,7 @@ function aiMatch() {
 
 test('a saved match loads and continues exactly as the original', { timeout: 120000 }, () => {
   const a = aiMatch();
-  run(a, 120);
+  run(a, 180);
   // A pending human command must survive the save too.
   const h = a.state.structures.find((s) => s.owner === 0);
   a.command(0, { type: 'deploy', unit: 'knight', n: 2, x: h.x + 3, y: h.y + 1 });

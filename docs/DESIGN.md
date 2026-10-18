@@ -83,11 +83,16 @@ impassable.
 
 - **Raising** (`deploy`): the player names a kind, a number and a target tile. The soldiers are raised
   at the player's town, port or outpost nearest the target that is not under siege (a rival squad
-  within 8 tiles in the last 8 s) and march there. A squad holds at most 200.
+  within 8 tiles in the last 8 s), preferring one on the same land as the target, and march there. A
+  squad holds at most 200. Targets out on open sea (no land within 8 tiles) are refused.
 - **Paths** come from a weighted A* over the tiles (`findPath`), with the cost of each step from the
-  biome and the kind's speed. Water can be crossed: soldiers sail at 2 tiles per second, and boarding or
-  leaving a boat costs extra. The heuristic is inflated ×2 and the search capped at 120,000 nodes,
-  which keeps it fast on the huge map at the price of slightly imperfect routes.
+  biome and the kind's speed. The map is divided once into stretches of walkable land (`landPart`;
+  water and peaks separate them). Within one stretch the search stays on land, so soldiers walk round
+  lakes and bays; only to reach another stretch do they take to boats (2 tiles per second, with an
+  extra cost to board and to land), and then they are drawn in a boat. The heuristic is inflated ×2
+  and the search capped at 120,000 nodes, which keeps it fast on the huge map at the price of
+  slightly imperfect routes. Squads sent together share the long march: the farthest searches the
+  whole way, the others only walk onto its road (within 20 tiles) and off it to their own spot.
 - **Orders** (`move`, `stop`): selected squads are sent to a point and spread around it in a spiral.
   At the end of a march a squad holds that spot as its post. Foot and horse close in on enemies within
   3 tiles but never stray more than 5 from their post; then they walk back.
@@ -232,19 +237,32 @@ No image assets are used.
   (32×32 tiles at 16 px) and settlement pictures, at three sizes. A pool of up to three workers
   (`paint-pool.js`, `paint-worker.js`) paints them into OffscreenCanvas and returns ImageBitmaps:
   - *quarter size* (4 px per tile) for every chunk and every settlement, painted for the whole map in
-    the background whenever a worker is idle, nearest the view first, so even the most zoomed-out view
-    shows every tree and town;
-  - *half and full size* for the chunks near the view from 6 pixels per tile, requested before they
-    are needed, nearest the centre first, plus a ring ahead, and dropped again when far away (phones
-    keep fewer).
-
-  New pictures fade in instead of popping, and a changed chunk keeps its old picture until the new one
-  arrives.
-- **Soldiers** (`people.js`): each squad is drawn as a small formation of up to nine soldiers in its
-  owner's colours, walking, standing or fighting (animated, facing the way it moves), with a banner
-  showing its size. Zoomed far out a squad becomes a single figure with its count. Positions are
-  interpolated between snapshots. Selected squads get a ring and their destination a line and a flag.
-- **Villagers** (`workers.js`): every town shows a few people at work, planned once per layout version
+    the background (one job at a time, paused while the map moves), nearest the view first, so even
+    the most zoomed-out view shows every tree and town;
+  - *half size*, and *full size* only when the zoom shows it 1:1, for what is on screen once there are
+    at least 8 device pixels per tile. Only the visible part asks for pictures, and the caches make
+    room for everything in view, so pictures never push each other out in a loop.
+- **Map cache.** Terrain and settlements change rarely, so they are drawn into a picture a little
+  larger than the screen, which is copied to the screen each frame. Panning shifts it and draws only
+  the strips that come into view; a picture arriving from a worker redraws just its own rectangle (a
+  few times a second, since a changed canvas costs a copy the next time it is drawn); while a zoom is
+  under way the last picture is stretched over the flat map and redrawn once the zoom settles. From 8
+  pixels per tile the territory tint and the border lines are a second cached picture, redrawn per
+  16-tile cell where land changed hands.
+- **Soldiers** (`people.js`): each squad is a small formation of up to nine soldiers in its owner's
+  colours, walking, standing or fighting (animated, each figure a little out of step, facing the way it
+  moves), with a badge showing its size. Below 16 pixels per tile a whole squad is one cached picture
+  per animation phase, and below 8 squads of one realm that overlap on screen are drawn as one with
+  their total. Far out (below 5) squads become chips with the unit's glyph, those of one realm close
+  together sharing one chip; the groups are worked out once per snapshot. Positions are interpolated
+  between snapshots. Selected squads get a ring and their destination a line.
+- **Sprites** (`atlas.js`): soldiers, villagers, chips, count badges and name tags are small finished
+  canvases, cached with a mirrored copy, so nothing is flipped, measured or written as text per frame.
+  (One shared sprite sheet would be slower: browsers copy a canvas that changed before drawing from it.)
+- **Resolution.** Drawing is capped at 2 device pixels per CSS pixel. A device that averages under
+  about 38 frames per second over two seconds drops to 1.5x, then 1x (enlarged by the browser in whole
+  steps, pixel-sharp). `?dpr=1|1.5|2` fixes it.
+- **Villagers** (`workers.js`, from 12 pixels per tile): every town shows a few people at work, planned once per layout version
   from the layout itself: woodcutters at the nearest trees to the lumber camp, miners at the quarry's
   rocks, farmers in the fields, fishers on the piers, and porters (about a third) walking the streets
   between the market and the houses. More with each town level. Purely visual.
@@ -261,7 +279,9 @@ No image assets are used.
   walls, gates, piers, fields, boats and ships, with drop shadows.
 
 `tools/perf-zoom.mjs` measures frame times over scripted eased zooms, a pinch and pans on a desktop
-and a phone profile. `client/debug/` has pages for inspecting terrain, ground and palettes, trees and
+and a phone profile. `tools/perf-mobile.mjs` plays a large match headless for ten minutes, loads it as
+a saved realm in a phone profile with the CPU slowed 4×, and measures frames per second, the
+renderer's own time and draw calls at every zoom, still and panning. `client/debug/` has pages for inspecting terrain, ground and palettes, trees and
 rocks, settlement growth in every style, building sprites, and soldiers and villagers.
 
 ## Verification

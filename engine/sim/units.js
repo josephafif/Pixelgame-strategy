@@ -51,32 +51,112 @@ export function stepCost(m, type, from, to) {
   return c;
 }
 
-/** A passable tile at or near (x, y) (land preferred). */
-function nearestPassable(m, x, y) {
-  for (const [dx, dy] of disk(4)) {
+/**
+ * Per tile: which stretch of walkable land it belongs to (-1 for water and
+ * impassable peaks), worked out once per world. Soldiers walk round water
+ * within one stretch and only take to boats to reach another.
+ */
+const landParts = new WeakMap();
+export function landPart(m) {
+  let part = landParts.get(m.world);
+  if (part) return part;
+  const { W, H } = m;
+  const mc = moveCost(m);
+  part = new Int32Array(W * H).fill(-1);
+  const stack = [];
+  let n = 0;
+  for (let i = 0; i < W * H; i++) {
+    if (part[i] >= 0 || !m.land[i] || mc[i] === Infinity) continue;
+    part[i] = n;
+    stack.push(i);
+    while (stack.length) {
+      const c = stack.pop();
+      const x = c % W;
+      for (const j of [x > 0 ? c - 1 : -1, x < W - 1 ? c + 1 : -1, c - W, c + W]) {
+        if (j < 0 || j >= W * H || part[j] >= 0 || !m.land[j] || mc[j] === Infinity) continue;
+        part[j] = n;
+        stack.push(j);
+      }
+    }
+    n++;
+  }
+  landParts.set(m.world, part);
+  return part;
+}
+
+/**
+ * The walkable land tile soldiers starting at `start` should head for when
+ * sent to (x, y): the nearest one, preferring the land they stand on when
+ * that is about as near. -1 when there is no land close by (open sea).
+ */
+function landGoal(m, start, x, y) {
+  const part = landPart(m);
+  const home = start >= 0 ? part[start] : -1;
+  let best = -1;
+  let bestD = 0;
+  for (const [dx, dy, d] of disk(8)) {
+    if (best >= 0 && d > bestD + 3) break;
     const nx = Math.round(x) + dx;
     const ny = Math.round(y) + dy;
     if (nx < 0 || ny < 0 || nx >= m.W || ny >= m.H) continue;
     const i = ny * m.W + nx;
-    if (m.land[i] && MOVE.get(m.world.biome[i]) !== Infinity) return i;
+    if (part[i] < 0) continue;
+    if (best < 0) {
+      best = i;
+      bestD = d;
+      if (home < 0 || part[i] === home) break;
+    } else if (part[i] === home) {
+      best = i;
+      break;
+    }
   }
-  const i = m.idx(Math.max(0, Math.min(m.W - 1, Math.round(x))), Math.max(0, Math.min(m.H - 1, Math.round(y))));
-  return m.land[i] ? -1 : i;
+  return best;
 }
 
-/** A path (tile indices) for a squad of `type` from tile `start` to near (x, y), or null. */
+/** Is there walkable land within reach of (x, y)? */
+export function nearLand(m, x, y) {
+  const part = landPart(m);
+  for (const [dx, dy] of disk(8)) {
+    const nx = Math.round(x) + dx;
+    const ny = Math.round(y) + dy;
+    if (nx >= 0 && ny >= 0 && nx < m.W && ny < m.H && part[ny * m.W + nx] >= 0) return true;
+  }
+  return false;
+}
+
+/**
+ * A path (tile indices) for a squad of `type` from tile `start` to near
+ * (x, y), or null. Within one stretch of land the path stays on land (round
+ * lakes and bays); to reach other land it sails, boarding where it must.
+ */
 export function findPath(m, type, start, x, y, maxNodes = 120000) {
-  const goal = nearestPassable(m, x, y);
+  const goal = landGoal(m, start, x, y);
   if (goal < 0) return null;
   if (goal === start) return [start];
+  const part = landPart(m);
   const speed = UNITS[type].speed;
-  // An inflated heuristic (weighted A*) searches far fewer tiles; the paths
-  // are a little longer than the shortest, which marching columns do anyway.
-  const minStep = Math.min(1 / speed, 1 / RULES.sailSpeed) * 2;
-  // stepCost, inlined: this runs for every neighbour of every tile searched.
   const mc = moveCost(m);
   const land = m.land;
   const inv = 1 / speed;
+  if (part[start] >= 0 && part[start] === part[goal]) {
+    // An inflated heuristic (weighted A*) searches far fewer tiles; the paths
+    // are a little longer than the shortest, which marching columns do anyway.
+    const path = m.search.astar({
+      start,
+      goal,
+      target: goal,
+      diag: true,
+      minStep: inv * 2,
+      maxNodes,
+      cost: (from, to, diag) => {
+        if (!land[to]) return Infinity;
+        const c = mc[to] * inv;
+        return diag ? c * 1.414 : c;
+      },
+    });
+    if (path) return path;
+  }
+  // stepCost, inlined: this runs for every neighbour of every tile searched.
   const sail = 1 / RULES.sailSpeed;
   const embark = RULES.embark * inv;
   return m.search.astar({
@@ -84,7 +164,7 @@ export function findPath(m, type, start, x, y, maxNodes = 120000) {
     goal,
     target: goal,
     diag: true,
-    minStep,
+    minStep: Math.min(inv, sail) * 2,
     maxNodes,
     cost: (from, to, diag) => {
       const toLand = land[to];
@@ -101,12 +181,18 @@ export function besieged(m, s) {
   return m.state.t - (s.siege ?? -99) < 8;
 }
 
-/** The player's town, port or outpost nearest (x, y) that can send soldiers out. */
+/**
+ * The player's town, port or outpost nearest (x, y) that can send soldiers
+ * out, preferring one on the same land as (x, y) so they can walk there.
+ */
 export function sourceFor(m, pid, x, y) {
+  const part = landPart(m);
+  const goal = landGoal(m, -1, x, y);
+  const there = goal >= 0 ? part[goal] : -1;
   let best = null;
   for (const s of m.state.structures) {
     if (s.owner !== pid || besieged(m, s)) continue;
-    const d = Math.hypot(s.x - x, s.y - y);
+    const d = Math.hypot(s.x - x, s.y - y) + (part[m.idx(s.x, s.y)] === there ? 0 : 1e4);
     if (!best || d < best.d) best = { s, d };
   }
   return best ? best.s : null;
@@ -129,6 +215,7 @@ export function deploy(m, pid, type, n, x, y) {
   const afford = Math.min(Math.floor(p.gold / u.cost), Math.floor((p.pop - 10) / u.people));
   if (afford < 1) return { error: p.gold < u.cost ? `${u.name} cost ${u.cost} gold each.` : 'Not enough people to raise soldiers.' };
   n = Math.min(n, afford);
+  if (!nearLand(m, x, y)) return { error: 'Soldiers need land to stand on: send them to a shore.' };
   const src = sourceFor(m, pid, x, y);
   if (!src) return { error: m.state.structures.some((s) => s.owner === pid) ? 'Every town and outpost of yours is under siege.' : 'You need a town or an outpost to raise soldiers.' };
   const path = findPath(m, type, m.idx(src.x, src.y), x, y);
@@ -182,6 +269,7 @@ export function move(m, pid, ids, x, y) {
   const st = m.state;
   const list = st.squads.filter((s) => s.owner === pid && ids.includes(s.id));
   if (!list.length) return { error: 'No soldiers selected.' };
+  if (!nearLand(m, x, y)) return { error: 'Soldiers need land to stand on: send them to a shore.' };
   // Spread squads over a small spiral around the point so they do not stack.
   const spots = disk(6).filter((o, k) => k === 0 || (Math.abs(o[0]) + Math.abs(o[1])) % 2 === 0);
   // Squads standing together share the long march: only the first of them

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Match } from '../engine/sim/match.js';
 import { TICK, RULES, TOWN_LEVELS, UNITS, structureCost, garrisonMax, guardRadius } from '../engine/sim/defs.js';
 import { create as createStructure } from '../engine/sim/structures.js';
+import { findPath, landPart } from '../engine/sim/units.js';
 import { PlayerView, applyDelta, unrle } from '../engine/net/protocol.js';
 import { validateLayout } from '../engine/settlement/validate.js';
 import { generateWorld, WORLD_SIZES } from '../engine/world/worldgen.js';
@@ -181,6 +182,53 @@ test('soldiers claim unclaimed land around them; riders faster than spearmen', (
   run(m, 3);
   const spears = tiles(0) - before2;
   assert.ok(spears > 0 && spears < riders, `spears ${spears} < riders ${riders}`);
+});
+
+test('soldiers walk round lakes and bays on their own land, and sail only to other land', () => {
+  const m = twoPlayers();
+  const part = landPart(m);
+  const W = m.W;
+  // Two tiles of one stretch of land with water on the straight line between them.
+  let pair = null;
+  for (let i = 0; i < m.owner.length && !pair; i += 7) {
+    if (part[i] < 0) continue;
+    const ax = i % W;
+    const ay = (i / W) | 0;
+    for (const [dx, dy] of [[24, 0], [0, 24], [17, 17], [17, -17]]) {
+      const bx = ax + dx;
+      const by = ay + dy;
+      if (bx >= W - 1 || by < 1 || by >= m.H - 1 || part[by * W + bx] !== part[i]) continue;
+      let wet = 0;
+      for (let k = 1; k < 24; k++) if (!m.land[Math.round(ay + (dy * k) / 24) * W + Math.round(ax + (dx * k) / 24)]) wet++;
+      if (wet >= 4) {
+        pair = { a: i, bx, by };
+        break;
+      }
+    }
+  }
+  assert.ok(pair, 'the test world has a lake or bay to walk round');
+  const path = findPath(m, 'shield', pair.a, pair.bx, pair.by);
+  assert.ok(path, 'a way round exists');
+  assert.ok(path.every((t) => m.land[t]), 'no boats on the way round');
+  // Land of another stretch is reached by sea.
+  const other = m.owner.findIndex((o, i) => part[i] >= 0 && part[i] !== part[pair.a] && m.land[i]);
+  if (other >= 0) {
+    const sea = findPath(m, 'shield', pair.a, other % W, (other / W) | 0);
+    if (sea) assert.ok(sea.some((t) => !m.land[t]), 'other land is reached by boat');
+  }
+  // Open sea is no place to send soldiers.
+  const deep = m.owner.findIndex((o, i) => {
+    const x = i % W;
+    const y = (i / W) | 0;
+    if (x < 10 || y < 10 || x > W - 10 || y > m.H - 10) return false;
+    for (let dy = -9; dy <= 9; dy++) for (let dx = -9; dx <= 9; dx++) if (m.land[i + dy * W + dx]) return false;
+    return true;
+  });
+  if (deep >= 0) {
+    const home = m.state.structures.find((q) => q.owner === 0);
+    assert.match(m.exec(0, { type: 'deploy', unit: 'shield', n: 5, x: deep % W, y: (deep / W) | 0 }).error || '', /land/);
+    assert.ok(home);
+  }
 });
 
 test('counters: riders run down archers, spears stop riders', () => {

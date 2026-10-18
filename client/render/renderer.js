@@ -582,7 +582,7 @@ export class Renderer {
       this.drawFlat(ctx, this.view, ox, oy, ppt);
     }
     this.drawTerritory(ox, oy, ppt, pixel);
-    if (ppt >= 8) this.drawTownLife(ox, oy, ppt);
+    if (ppt >= 12) this.drawTownLife(ox, oy, ppt);
     this.drawStructures(ox, oy, ppt, pixel);
     this.drawBoats(ox, oy, ppt);
     this.drawSquads(ox, oy, ppt, now);
@@ -1185,7 +1185,34 @@ export class Renderer {
       const sx = ox + (x + 0.5) * ppt;
       const sy = oy + (y + 0.5) * ppt;
       if (sx < -60 || sy < -60 || sx > this.vw + 60 || sy > this.vh + 60) continue;
-      vis.push({ q, p, sx, sy });
+      vis.push({ q, p, sx, sy, n: q.n, fight: q.state === 'fight' });
+    }
+    if (ppt < 8) {
+      // Squads of one realm overlapping on screen are drawn as one, with their total.
+      const cell = 16 / ppt; // tiles
+      const by = new Map();
+      const kept = [];
+      for (const v of vis) {
+        if (this.selected.has(v.q.id)) {
+          kept.push(v);
+          continue;
+        }
+        const k = (v.q.owner + 1) * 1e8 + Math.floor((v.sy - oy) / ppt / cell) * 1e4 + Math.floor((v.sx - ox) / ppt / cell);
+        const g = by.get(k);
+        if (!g) {
+          by.set(k, v);
+          kept.push(v);
+          continue;
+        }
+        // The biggest squad stands for the group.
+        const n = g.n + v.q.n;
+        const fight = g.fight || v.fight;
+        if (v.q.n > g.q.n) Object.assign(g, { q: v.q, p: v.p, sx: v.sx, sy: v.sy });
+        g.n = n;
+        g.fight = fight;
+      }
+      vis.length = 0;
+      vis.push(...kept);
     }
     vis.sort((a, b) => a.sy - b.sy);
     // Figures are never drawn smaller than this, so armies stay readable from afar.
@@ -1193,8 +1220,8 @@ export class Renderer {
     const step = ppt * Math.max(1, 8 / ppt) * 0.9;
     const tt = now / 1000;
     const dpr = this.dpr;
-    // Below 8 px per tile figures have a fixed size: whole squads come as one picture.
-    const whole = ppt < 8;
+    // Below 16 px per tile figures are small and many: whole squads come as one picture.
+    const whole = ppt < 16;
     const phases = { f: Math.floor(tt * 3) % 2, m: Math.floor(tt * 8) % 4, i: Math.floor(tt * 1.2) % 4 };
     for (const v of vis) {
       const { q, p, sx, sy } = v;
@@ -1208,9 +1235,17 @@ export class Renderer {
       const fighting = q.state === 'fight';
       const moving = q.state === 'moving' || (p && Math.hypot(q.x - p.x, q.y - p.y) > 0.02);
       const state = fighting ? 'f' : moving ? 'm' : 'i';
+      // Crossing water: they sit in a boat.
+      if (!cw.isLand(q.x + 0.5, q.y + 0.5)) {
+        const b = atlas.get(`s:boat:${color}`, () => {
+          const spr = shipSprite('boat', color);
+          return { canvas: spr.canvas, w: spr.w, h: spr.h, ax: spr.w / 2, ay: spr.h - 3 };
+        });
+        atlas.draw(ctx, b, sx, sy + 6 * scale, scale * 1.6, face < 0);
+      }
       if (whole) {
         const phase = phases[state];
-        const e = atlas.get(`F:${q.type}:${color}:${nf}:${state}:${phase}:${dpr}`, () => formationSprite(q.type, color, nf, state, phase, scale, step, dpr));
+        const e = atlas.get(`F:${q.type}:${color}:${nf}:${state}:${phase}:${dpr}:${Math.round(step * 4)}:${Math.round(scale * 64)}`, () => formationSprite(q.type, color, nf, state, phase, scale, step, dpr));
         atlas.draw(ctx, e, sx, sy, 1 / dpr, face < 0);
       } else {
         const spread = (SPREAD[q.type] || 1) * step;
@@ -1222,7 +1257,7 @@ export class Renderer {
           atlas.draw(ctx, e, sx + f[0] * face * spread, sy + f[1] * spread, scale, face < 0);
         }
       }
-      this.badge(q.n, sx + 8 * scale, sy - 20 * scale, color, fighting);
+      this.badge(v.n, sx + 8 * scale, sy - 20 * scale, color, v.fight);
     }
   }
 

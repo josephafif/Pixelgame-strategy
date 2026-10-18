@@ -13,6 +13,7 @@
 
 import { STRUCTURES, MAX_TOWN_LEVEL, TOWN_LEVELS, RULES, UNITS, UNIT_KEYS } from '../../engine/sim/defs.js';
 import { canFoundAt } from '../../engine/world/sites.js';
+import { landPart } from '../../engine/sim/units.js';
 import { unitIcon } from '../render/people.js';
 import { icon } from './icons.js';
 
@@ -382,12 +383,15 @@ export class GameUI {
     }, 900);
   }
 
-  /** The player's place nearest (x, y) (the server picks the same one unless it is besieged). */
+  /** The player's place soldiers sent to (x, y) come from (as the server picks it, unless besieged). */
   sourceNear(x, y) {
+    const cw = this.cw;
+    const part = landPart(cw);
+    const there = part[Math.max(0, Math.min(cw.H - 1, Math.round(y))) * cw.W + Math.max(0, Math.min(cw.W - 1, Math.round(x)))];
     let best = null;
-    for (const s of this.cw.snap?.structures || []) {
-      if (s.owner !== this.cw.you) continue;
-      const d = Math.hypot(s.x - x, s.y - y);
+    for (const s of cw.snap?.structures || []) {
+      if (s.owner !== cw.you) continue;
+      const d = Math.hypot(s.x - x, s.y - y) + (there >= 0 && part[s.y * cw.W + s.x] !== there ? 1e4 : 0);
       if (!best || d < best.d) best = { s, d };
     }
     return best ? { x: best.s.x, y: best.s.y } : null;

@@ -479,14 +479,15 @@ export class Match {
     if (st.phase === 'over') return;
     st.t += dt;
     st.tick++;
-    const every = (sec) => st.tick % Math.round(sec / dt) === 0;
+    // Periodic work, spread over different ticks so no single tick does all of it.
+    const every = (sec, offset = 0) => (st.tick + offset) % Math.round(sec / dt) === 0;
     for (const p of st.players) if (p.alive) this.updatePeople(p, dt);
     units.tick(this, dt);
     units.upkeep(this, dt);
-    if (every(RULES.claimEvery)) units.claim(this);
+    if (every(RULES.claimEvery, 2)) units.claim(this);
     if (every(1)) units.merge(this);
-    if (every(RULES.townClaimEvery)) territory.townClaims(this);
-    if (every(RULES.annexEvery)) territory.annex(this);
+    if (every(RULES.townClaimEvery, 3)) territory.townClaims(this);
+    if (every(RULES.annexEvery, 15)) territory.annex(this);
     naval.tick(this, dt);
     structures.tick(this);
     if (every(1)) {

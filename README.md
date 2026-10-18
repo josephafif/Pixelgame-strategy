@@ -59,7 +59,8 @@ Open <http://localhost:8080> in a browser.
   | Knights | 45 | strong all round, costly |
   | Trebuchets | 120 | slow; break garrisons and walls from afar |
 
-  Forests and hills give cover. Soldiers sent across water take to boats at the shore.
+  Forests and hills give cover. Soldiers walk round lakes and bays; only to reach other land, such as
+  an island, do they take to boats.
 - **Towns fall** when their garrison is gone and enemy soldiers reach the gate. Garrisons fire on
   attackers and refill slowly when no enemy is near. A realm that has lost every town, port and outpost
   has a minute to take one back.
@@ -110,6 +111,7 @@ node tools/save-check.mjs shots            # browser test: save, reload, continu
 node tools/mp-browser.mjs shots            # two browsers in one multiplayer room
 node tools/mobile-shots.mjs shots all       # every menu and HUD state: phone portrait, landscape, desktop
 node tools/perf-zoom.mjs both              # frame times while zooming, pinching and panning (desktop and phone)
+node tools/perf-mobile.mjs large 10 4      # a 10-minute large match on a phone profile, CPU slowed 4x
 node tools/shoot.mjs "/client/debug/sprites.html?scale=3" out.png 1200 900   # screenshot any page
 ```
 
