@@ -17,6 +17,19 @@ export class TerritoryImage {
     this.img = this.ctx.createImageData(cw.W, cw.H);
     this.colors = new Map();
     this.v = 0;
+    // The rim of one chosen realm (the player's target), kept up to date the same way.
+    this.hlCanvas = makeCanvas(cw.W, cw.H);
+    this.hlCtx = this.hlCanvas.getContext('2d');
+    this.hlImg = this.hlCtx.createImageData(cw.W, cw.H);
+    this.hl = null;
+    this.hlNext = null;
+    this.changed = []; // tiles repainted since the renderer last looked
+    this.changedAll = false;
+  }
+
+  /** Outline realm `pid` (null: none). */
+  highlight(pid) {
+    this.hlNext = pid ?? null;
   }
 
   /** [fill r, g, b, rim r, g, b] for a player. */
@@ -40,10 +53,19 @@ export class TerritoryImage {
     const k = i * 4;
     if (o < 0) {
       d[k + 3] = 0;
+      if (this.hl !== null) this.hlImg.data[k + 3] = 0;
       return;
     }
     const x = i % W;
     const rim = x === 0 || x === W - 1 || i < W || i >= owner.length - W || owner[i - 1] !== o || owner[i + 1] !== o || owner[i - W] !== o || owner[i + W] !== o;
+    if (this.hl !== null) {
+      const h = this.hlImg.data;
+      const on = rim && o === this.hl;
+      h[k] = 255;
+      h[k + 1] = 243;
+      h[k + 2] = 196;
+      h[k + 3] = on ? 255 : 0;
+    }
     const c = this.color(o);
     if (rim) {
       d[k] = c[3];
@@ -68,11 +90,18 @@ export class TerritoryImage {
       cw.terrAll = true;
     }
     const { W, H } = cw;
+    if (this.hlNext !== this.hl) {
+      this.hl = this.hlNext;
+      if (this.hl !== null) cw.terrAll = true;
+    }
     if (cw.terrAll) {
+      if (this.hl !== null) this.hlImg.data.fill(0);
       for (let i = 0; i < W * H; i++) this.paint(i);
       this.ctx.putImageData(this.img, 0, 0);
+      if (this.hl !== null) this.hlCtx.putImageData(this.hlImg, 0, 0);
       cw.terrAll = false;
       cw.terrTiles = [];
+      this.changedAll = true;
       this.v++;
       return true;
     }
@@ -96,11 +125,13 @@ export class TerritoryImage {
       if (y > y1) y1 = y;
     }
     cw.terrTiles = [];
+    for (const i of list) this.changed.push(i);
     x0 = Math.max(0, x0 - 1);
     y0 = Math.max(0, y0 - 1);
     x1 = Math.min(W - 1, x1 + 1);
     y1 = Math.min(H - 1, y1 + 1);
     this.ctx.putImageData(this.img, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+    if (this.hl !== null) this.hlCtx.putImageData(this.hlImg, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
     this.v++;
     return true;
   }

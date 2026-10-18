@@ -46,14 +46,25 @@ self.addEventListener('message', (e) => {
         self.postMessage({ key: m.key, low }, [low]);
         return;
       }
+      // The full picture only when it will be shown at full size.
       const half = shrink(cv, 2);
+      if (!m.full) {
+        self.postMessage({ key: m.key, half, low }, [half, low]);
+        return;
+      }
       const bmp = cv.transferToImageBitmap();
       self.postMessage({ key: m.key, bmp, half, low }, [bmp, half, low]);
     } else if (m.t === 'layer') {
       const r = renderSettlementLayer(world, m.L, { color: m.color });
       const low = shrink(r.canvas, 4);
-      const bmp = r.canvas.transferToImageBitmap();
-      self.postMessage({ key: m.key, bmp, low, px: r.px, py: r.py, v: m.v, color: m.color }, [bmp, low]);
+      if (m.lowOnly) {
+        self.postMessage({ key: m.key, low, px: r.px, py: r.py, w: r.canvas.width, h: r.canvas.height, v: m.v, color: m.color }, [low]);
+        return;
+      }
+      const half = shrink(r.canvas, 2);
+      const out = { key: m.key, half, low, px: r.px, py: r.py, w: r.canvas.width, h: r.canvas.height, v: m.v, color: m.color };
+      if (m.full) out.bmp = r.canvas.transferToImageBitmap();
+      self.postMessage(out, out.bmp ? [out.bmp, half, low] : [half, low]);
     }
   } catch (err) {
     self.postMessage({ key: m.key, error: String(err && err.stack ? err.stack : err) });

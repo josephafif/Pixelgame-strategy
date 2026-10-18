@@ -72,8 +72,9 @@ self.addEventListener('message', (e) => {
     }
   } else if (msg.t === 'save' && match) {
     try {
+      // Turned into text here, so the page only has to store it.
       const data = saveMatch(match);
-      self.postMessage({ t: 'saved', id: msg.id, data, info: describeSave(data) });
+      self.postMessage({ t: 'saved', id: msg.id, text: JSON.stringify(data), info: describeSave(data) });
     } catch (err) {
       self.postMessage({ t: 'saved', id: msg.id, error: err.message });
     }

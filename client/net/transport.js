@@ -75,7 +75,7 @@ export class WorkerTransport {
     this.worker.postMessage({ t: 'speed', v });
   }
 
-  /** Ask the simulation for a saved game: resolves to { data, info }. */
+  /** Ask the simulation for a saved game: resolves to { text, info } (text: the save as JSON). */
   save() {
     const id = (this.saveId = (this.saveId || 0) + 1);
     return new Promise((resolve, reject) => {
@@ -83,7 +83,7 @@ export class WorkerTransport {
         if (msg.t !== 'saved' || msg.id !== id) return;
         off();
         if (msg.error) reject(new Error(msg.error));
-        else resolve({ data: msg.data, info: msg.info });
+        else resolve({ text: msg.text, info: msg.info });
       });
       this.worker.postMessage({ t: 'save', id });
     });

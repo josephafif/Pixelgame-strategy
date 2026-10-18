@@ -15,25 +15,28 @@ import { renderChunk, CHUNK, TILE } from './ground.js';
 import { renderSettlementLayer } from './settlement-layer.js';
 import { PaintPool } from './paint-pool.js';
 import { TerritoryImage } from './territory.js';
-import { layoutBounds } from '../../engine/settlement/planner.js';
+import { layoutBounds, N as LN } from '../../engine/settlement/planner.js';
 import { buildTerrainOverview } from './overview.js';
 import { shipSprite } from './decor.js';
 import { unitSprite, unitIcon } from './people.js';
 import { planWorkers, drawWorkers } from './workers.js';
 import { Pix, makeCanvas } from './pix.js';
 import { shade, rgb } from './color.js';
+import { Atlas } from './atlas.js';
 
 export const MIN_PPT = 1;
 export const MAX_PPT = 64;
 const PIXEL = 2.5; // pixels per tile where pixel art starts to fade in over the flat map
 const PIXEL_FULL = 3.5; // ... and covers it
 const LINES = 8; // crisp border lines from here (below, the territory image's rims)
+const TINT = 0.3; // territory colour over close-up pixel art
+const CELL = 16; // tiles per side of the cells in which territory changes are redrawn
 // Scales that leave pixel art crisp.
 const CRISP = [1, 1.5, 2, 3, 4, 5, 6, 8, 12, 16, 24, 32, 48, 64];
 const SMALL_SCREEN = typeof window !== 'undefined' && Math.min(window.innerWidth, window.innerHeight) < 600;
 // Full and half-size chunks are 1 MB + 256 KB each: phones keep fewer.
 const MAX_CHUNKS = SMALL_SCREEN ? 36 : 90;
-const MAX_LAYERS = SMALL_SCREEN ? 24 : 60;
+const MAX_LAYERS = SMALL_SCREEN ? 40 : 80;
 const SEA = '#2c5b72'; // deep ocean, beyond the map's edge
 
 const ease = (t) => 1 - Math.pow(1 - t, 3);
@@ -71,11 +74,7 @@ function marker(kind, color, level) {
 }
 
 // Squad chips for the flat map: a coloured badge with the unit glyph.
-const chips = new Map();
 function chip(type, color) {
-  const key = `${type}:${color}`;
-  let c = chips.get(key);
-  if (c) return c;
   const icon = unitIcon(type);
   const cv = makeCanvas(icon.w + 4, icon.h + 4);
   const g = cv.getContext('2d');
@@ -84,13 +83,106 @@ function chip(type, color) {
   g.fillStyle = color;
   g.fillRect(1, 1, cv.width - 2, cv.height - 2);
   g.drawImage(icon.canvas, 2, 2);
-  c = { canvas: cv, w: cv.width, h: cv.height };
-  chips.set(key, c);
-  return c;
+  return { canvas: cv, w: cv.width, h: cv.height };
+}
+
+// For measuring text before making a picture of it.
+let probeCtx = null;
+function probe(font) {
+  probeCtx ||= makeCanvas(1, 1).getContext('2d');
+  probeCtx.font = font;
+  return probeCtx;
+}
+
+/** A soldier count on the owner's colour (with a flashing mark while fighting), at `dpr` resolution. */
+function badgeSprite(text, color, fight, dpr) {
+  const font = `600 ${10 * dpr}px "Pixelify Sans", monospace`;
+  const tw = Math.ceil(probe(font).measureText(text).width / dpr) + 6;
+  const w = tw + 2 + (fight ? 7 : 0);
+  const cv = makeCanvas(Math.ceil(w * dpr), 13 * dpr);
+  const g = cv.getContext('2d');
+  g.scale(dpr, dpr);
+  g.fillStyle = '#231a16';
+  g.fillRect(0, 0, tw + 2, 13);
+  g.fillStyle = color;
+  g.fillRect(1, 1, tw, 11);
+  const [r, gr, b] = rgb(color);
+  g.fillStyle = r * 0.3 + gr * 0.55 + b * 0.15 > 150 ? '#231a16' : '#ffffff';
+  g.font = font.replace(`${10 * dpr}px`, '10px');
+  g.textAlign = 'left';
+  g.textBaseline = 'top';
+  g.fillText(text, 4, 1);
+  if (fight) {
+    g.fillStyle = fight === 1 ? '#ffe08a' : '#ff6a3a';
+    g.fillRect(tw + 5, 4, 4, 4);
+  }
+  return { canvas: cv, w: cv.width, h: cv.height, ax: 0, ay: 0 };
+}
+
+/** A town's name tag, at `dpr` resolution. */
+function nameTag(text, color, dpr) {
+  const w = Math.ceil(probe(`${12 * dpr}px "Pixelify Sans", monospace`).measureText(text).width / dpr) + 12;
+  const cv = makeCanvas(w * dpr, 18 * dpr);
+  const g = cv.getContext('2d');
+  g.scale(dpr, dpr);
+  g.fillStyle = 'rgba(35,26,22,0.8)';
+  g.fillRect(0, 0, w, 18);
+  g.fillStyle = color;
+  g.fillRect(0, 0, 3, 18);
+  g.fillStyle = '#f6efdc';
+  g.font = '12px "Pixelify Sans", monospace';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, w / 2 + 1, 10);
+  return { canvas: cv, w: cv.width, h: cv.height, ax: cv.width / 2, ay: cv.height / 2 };
 }
 
 // Where the figures of a squad stand, relative to its centre (tiles).
 const FORMATION = [[0, 0], [-0.42, 0.22], [0.42, 0.22], [-0.21, -0.25], [0.21, -0.25], [0, 0.46], [-0.63, -0.05], [0.63, -0.05], [0, -0.5]];
+// For n figures: their formation slots, back row first.
+const ROWS = Array.from({ length: FORMATION.length + 1 }, (_, n) => FORMATION.slice(0, n).map((f, k) => k).sort((a, b) => FORMATION[a][1] - FORMATION[b][1]));
+const SPREAD = { rider: 1.3, knight: 1.3, trebuchet: 1.8 };
+
+/** Frame of figure k of a squad: each figure is a little out of step with the others. */
+function figureFrame(state, phase, k) {
+  if (state === 'f') return 4 + ((phase + Math.floor(k * 0.7)) % 2);
+  if (state === 'm') return (phase + Math.floor(k * 1.3)) % 4;
+  return (phase + k) % 4 === 0 ? 1 : 0;
+}
+
+/**
+ * A whole squad as one picture (far zooms, where figures are small and many
+ * squads are on screen): n figures in formation, for one animation phase,
+ * at device resolution. `scale` and `step` are in CSS pixels.
+ */
+function formationSprite(type, color, nf, state, phase, scale, step, dpr) {
+  const spread = (SPREAD[type] || 1) * step;
+  const k = scale * dpr;
+  const figs = ROWS[nf].map((slot) => {
+    const spr = unitSprite(type, color, figureFrame(state, phase, slot));
+    const f = FORMATION[slot];
+    const x = f[0] * spread * dpr - spr.ax * k;
+    const y = f[1] * spread * dpr - spr.ay * k;
+    return { spr, x, y };
+  });
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const f of figs) {
+    x0 = Math.min(x0, f.x);
+    y0 = Math.min(y0, f.y);
+    x1 = Math.max(x1, f.x + f.spr.w * k);
+    y1 = Math.max(y1, f.y + f.spr.h * k);
+  }
+  x0 = Math.floor(x0);
+  y0 = Math.floor(y0);
+  const cv = makeCanvas(Math.ceil(x1 - x0) + 1, Math.ceil(y1 - y0) + 1);
+  const g = cv.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  for (const f of figs) g.drawImage(f.spr.canvas, Math.round(f.x - x0), Math.round(f.y - y0), f.spr.w * k, f.spr.h * k);
+  return { canvas: cv, w: cv.width, h: cv.height, ax: -x0, ay: -y0 };
+}
 
 export class Renderer {
   constructor(canvas, cw) {
@@ -107,7 +199,9 @@ export class Renderer {
     this.overview = buildTerrainOverview(cw.world);
     this.terr = new TerritoryImage(cw);
     this.labelCache = new Map();
+    this.atlas = new Atlas();
     this.labelPos = new Map();
+    this.labelArmy = new Map();
     this.facing = new Map();
     this.pings = [];
     this.preview = null; // { x, y, ok, radius }
@@ -116,11 +210,24 @@ export class Renderer {
     this.box = null; // selection rectangle in screen coordinates
     this.deploy = null; // { x, y, ok, from: {x, y}, type, n }
     this.frameNo = 0;
-    this.borderCache = null;
+    this.mc = null; // the map cache
+    this.mcDirty = []; // tile rectangles of it to redraw
+    this.terrCells = new Set(); // cells of territory changed since the cached lines were drawn (-1: all)
     this.pool = new PaintPool(cw.world, (r) => this.painted(r));
     this.chunksX = Math.ceil(cw.W / CHUNK);
     this.chunksY = Math.ceil(cw.H / CHUNK);
-    if (typeof document !== 'undefined' && document.fonts) document.fonts.ready.then(() => this.labelCache.clear());
+    // ?dpr=1|1.5|2 fixes the drawing resolution (for testing).
+    const fixed = typeof location !== 'undefined' ? Number(new URLSearchParams(location.search).get('dpr')) : 0;
+    if (fixed > 0) {
+      this.dprCap = fixed;
+      this.fixedDpr = true;
+    }
+    if (typeof document !== 'undefined' && document.fonts) {
+      document.fonts.ready.then(() => {
+        this.labelCache.clear();
+        this.atlas.reset();
+      });
+    }
     this.resize();
   }
 
@@ -128,27 +235,34 @@ export class Renderer {
   painted(r) {
     if (r.key.startsWith('c') || r.key.startsWith('q')) {
       const key = r.key.slice(1);
+      const [cx, cy] = key.split(',').map(Number);
+      this.touch(cx * CHUNK, cy * CHUNK, CHUNK, CHUNK);
       const oldLow = this.low.get(key);
       if (oldLow?.canvas?.close) oldLow.canvas.close();
       this.low.set(key, { canvas: r.low, at: this.now || 0 });
-      if (!r.bmp) return;
+      if (!r.half) return;
       const old = this.chunks.get(key);
       if (old?.canvas?.close) old.canvas.close();
       if (old?.half?.close) old.half.close();
-      this.chunks.set(key, { canvas: r.bmp, half: r.half, used: this.frameNo, at: this.now || 0 });
-      this.evict(this.chunks, MAX_CHUNKS);
+      this.chunks.set(key, { canvas: r.bmp || null, half: r.half, used: this.frameNo, at: this.now || 0 });
+      this.evict(this.chunks, this.chunkRoom || MAX_CHUNKS);
     } else {
       const sid = Number(r.key.slice(1));
       const L = this.cw.layouts.get(sid);
       const old = this.layers.get(sid);
-      if (old?.canvas?.close) old.canvas.close();
+      const before = this.layersLow.get(sid);
+      if (before) this.touch(Math.floor(before.px / TILE), Math.floor(before.py / TILE), Math.ceil(before.w / TILE) + 1, Math.ceil(before.h / TILE) + 1);
+      this.touch(Math.floor(r.px / TILE), Math.floor(r.py / TILE), Math.ceil(r.w / TILE) + 1, Math.ceil(r.h / TILE) + 1);
       const oldLow = this.layersLow.get(sid);
       if (oldLow?.canvas?.close) oldLow.canvas.close();
       if (!L) return;
-      const ly = { canvas: r.bmp, px: r.px, py: r.py, v: r.v, color: r.color, bounds: layoutBounds(L), used: this.frameNo };
+      this.layersLow.set(sid, { canvas: r.low, px: r.px, py: r.py, w: r.w, h: r.h, v: r.v, color: r.color });
+      if (!r.half) return; // only the quarter-size picture was asked for
+      if (old?.canvas?.close) old.canvas.close();
+      if (old?.half?.close) old.half.close();
+      const ly = { canvas: r.bmp || null, half: r.half, w: r.w, h: r.h, px: r.px, py: r.py, v: r.v, color: r.color, bounds: layoutBounds(L), used: this.frameNo };
       this.layers.set(sid, ly);
-      this.layersLow.set(sid, { canvas: r.low, px: r.px, py: r.py, w: r.bmp.width, h: r.bmp.height, v: r.v, color: r.color });
-      this.evict(this.layers, MAX_LAYERS);
+      this.evict(this.layers, this.layerRoom || MAX_LAYERS);
     }
   }
 
@@ -165,7 +279,7 @@ export class Renderer {
   }
 
   /** The overlay data a worker needs to paint chunk (cx, cy), with a margin. */
-  chunkJob(cx, cy, lowOnly = false) {
+  chunkJob(cx, cy, lowOnly = false, full = true) {
     const { cw } = this;
     const W = cw.W;
     const x0 = Math.max(0, cx * CHUNK - 2);
@@ -183,7 +297,7 @@ export class Renderer {
       patch[k] = out;
       transfer.push(out.buffer);
     }
-    return { msg: { t: 'chunk', cx, cy, patch, lowOnly }, transfer };
+    return { msg: { t: 'chunk', cx, cy, patch, lowOnly, full }, transfer };
   }
 
   destroy() {
@@ -192,8 +306,15 @@ export class Renderer {
 
   resize() {
     // Pixel art gains nothing above 2x, and phones at 3x pay for it in frame time.
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const dev = window.devicePixelRatio || 1;
+    const dpr = Math.min(this.dprCap || 2, dev);
     this.dpr = dpr;
+    // Enlarged by the browser in whole steps, pixel art stays crisp.
+    const k = dev / dpr;
+    this.canvas.style.imageRendering = k > 1.01 && Math.abs(k - Math.round(k)) < 0.05 ? 'pixelated' : '';
+    this.mc = null;
+    this.bc = null;
+    this.mcDirty = [];
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
     this.canvas.width = Math.round(w * dpr);
@@ -201,6 +322,8 @@ export class Renderer {
     this.vw = w;
     this.vh = h;
     this.labelCache.clear();
+    if (this.atlas && this.atlasDpr !== dpr) this.atlas.reset();
+    this.atlasDpr = dpr;
   }
 
   // Camera ------------------------------------------------------------------
@@ -309,18 +432,18 @@ export class Renderer {
 
   // Caches ------------------------------------------------------------------
 
-  /** A chunk's full/half pictures, asking a worker for them when missing. */
-  chunk(cx, cy, prio = 0) {
+  /** A chunk's half-size (and, when `full`, full-size) pictures, asking a worker for them when missing. */
+  chunk(cx, cy, prio = 0, full = true) {
     const key = `${cx},${cy}`;
     let c = this.chunks.get(key);
     const dirty = this.cw.dirtyChunks.has(key);
     if (this.pool.ok) {
-      if ((!c || dirty) && !this.pool.busy(`c${key}`)) {
+      if ((!c || dirty || (full && !c.canvas)) && !this.pool.busy(`c${key}`)) {
         this.pool.want(`c${key}`, prio, () => {
-          // The full picture comes with a fresh quarter-size one.
+          // The pictures come with a fresh quarter-size one.
           this.cw.dirtyChunks.delete(key);
           this.cw.lowDirty.delete(key);
-          return this.chunkJob(cx, cy);
+          return this.chunkJob(cx, cy, false, full);
         });
       }
     } else if (!c || dirty) {
@@ -328,10 +451,11 @@ export class Renderer {
       if (this.mainBudget <= 0) return c;
       this.mainBudget--;
       const canvas = renderChunk(this.cw.world, cx, cy, this.cw.ov);
-      c = { canvas, used: this.frameNo, at: this.now };
+      c = { canvas, half: null, used: this.frameNo, at: this.now };
       this.chunks.set(key, c);
+      this.touch(cx * CHUNK, cy * CHUNK, CHUNK, CHUNK);
       this.cw.dirtyChunks.delete(key);
-      this.evict(this.chunks, MAX_CHUNKS);
+      this.evict(this.chunks, this.chunkRoom || MAX_CHUNKS);
     }
     if (c) c.used = this.frameNo;
     return c;
@@ -351,25 +475,43 @@ export class Renderer {
     return l;
   }
 
-  layer(s) {
+  /** Ask for just the quarter-size picture of a settlement (far views). */
+  lowLayer(s) {
+    const L = this.cw.layouts.get(s.id);
+    if (!L || !this.pool.ok) {
+      this.layer(s, false);
+      return;
+    }
+    const color = this.cw.colorOf(s.owner);
+    if (this.pool.busy(`s${s.id}`)) return;
+    const d = Math.hypot(s.x - this.cam.x, s.y - this.cam.y) / CHUNK;
+    this.pool.want(`s${s.id}`, 5 + d, () => {
+      this.cw.layerDirty.delete(s.id);
+      return { msg: { t: 'layer', L, color, v: L.v, lowOnly: true } };
+    });
+  }
+
+  /** A settlement's pictures (half size, and full size when `full`), asking a worker for them when missing. */
+  layer(s, full = true) {
     const L = this.cw.layouts.get(s.id);
     if (!L) return null;
     const color = this.cw.colorOf(s.owner);
     let ly = this.layers.get(s.id);
-    const stale = !ly || ly.v !== L.v || ly.color !== color || this.cw.layerDirty.has(s.id);
+    const stale = !ly || ly.v !== L.v || ly.color !== color || this.cw.layerDirty.has(s.id) || (full && !ly.canvas);
     if (stale && this.pool.ok) {
       if (!this.pool.busy(`s${s.id}`)) {
         const d = Math.hypot(s.x - this.cam.x, s.y - this.cam.y) / CHUNK;
         this.pool.want(`s${s.id}`, d - 0.5, () => {
           this.cw.layerDirty.delete(s.id);
-          return { msg: { t: 'layer', L, color, v: L.v } };
+          return { msg: { t: 'layer', L, color, v: L.v, full } };
         });
       }
     } else if (stale && this.mainBudget > 0) {
       this.mainBudget--;
       const r = renderSettlementLayer(this.cw.world, L, { color });
-      ly = { ...r, color, v: L.v, bounds: layoutBounds(L) };
+      ly = { ...r, half: null, w: r.canvas.width, h: r.canvas.height, color, v: L.v, bounds: layoutBounds(L) };
       this.layers.set(s.id, ly);
+      this.touch(Math.floor(r.px / TILE), Math.floor(r.py / TILE), Math.ceil(r.canvas.width / TILE) + 1, Math.ceil(r.canvas.height / TILE) + 1);
       this.cw.layerDirty.delete(s.id);
     }
     if (ly) ly.used = this.frameNo;
@@ -378,8 +520,30 @@ export class Renderer {
 
   // Frame -------------------------------------------------------------------
 
+  /**
+   * A device that cannot keep up gets a lower drawing resolution (2x, 1.5x,
+   * then 1x): judged over two seconds of frames once the game has settled.
+   */
+  watchFrameRate(now) {
+    const gap = now - (this.lastFrameAt || now);
+    this.lastFrameAt = now;
+    this.startedAt ||= now;
+    if (gap <= 0 || gap > 120 || now - this.startedAt < 5000 || typeof document !== 'undefined' && document.hidden) return;
+    this.gapSum = (this.gapSum || 0) + gap;
+    this.gapN = (this.gapN || 0) + 1;
+    if (this.gapSum < 2000) return;
+    const avg = this.gapSum / this.gapN;
+    this.gapSum = 0;
+    this.gapN = 0;
+    if (avg > 26 && this.dpr > 1 && !this.fixedDpr) {
+      this.dprCap = this.dpr > 1.5 ? 1.5 : 1;
+      this.resize();
+    }
+  }
+
   frame(now) {
     this.frameNo++;
+    this.watchFrameRate(now);
     this.now = now;
     this.mainBudget = 2;
     this.stepFly(now);
@@ -388,10 +552,18 @@ export class Renderer {
     const { ctx } = this;
     const dpr = this.dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = SEA;
-    ctx.fillRect(0, 0, this.vw, this.vh);
-    this.terr.update();
+    this.terr.highlight(this.highlight);
+    if (this.terr.update()) this.noteTerritory();
     const ppt = this.cam.ppt;
+    if (ppt !== this.lastPpt) {
+      this.lastPpt = ppt;
+      this.zoomAt = now;
+    }
+    if (this.cam.x !== this.lastX || this.cam.y !== this.lastY) {
+      this.lastX = this.cam.x;
+      this.lastY = this.cam.y;
+      this.moveAt = now;
+    }
     const tl = this.screenToTile(0, 0);
     const br = this.screenToTile(this.vw, this.vh);
     this.view = { x0: Math.floor(tl.x) - 1, y0: Math.floor(tl.y) - 1, x1: Math.ceil(br.x) + 1, y1: Math.ceil(br.y) + 1 };
@@ -401,9 +573,16 @@ export class Renderer {
     this.ox = ox;
     this.oy = oy;
     const pixel = ppt < PIXEL ? 0 : Math.min(1, (ppt - PIXEL) / (PIXEL_FULL - PIXEL));
-    if (pixel < 1) this.drawFlat(ox, oy, ppt);
-    if (pixel > 0) this.drawPixel(ox, oy, ppt, pixel);
+    if (pixel > 0) {
+      this.requestPictures(ppt);
+      this.drawMap(ox, oy, ppt, pixel);
+    } else {
+      ctx.fillStyle = SEA;
+      ctx.fillRect(0, 0, this.vw, this.vh);
+      this.drawFlat(ctx, this.view, ox, oy, ppt);
+    }
     this.drawTerritory(ox, oy, ppt, pixel);
+    if (ppt >= 8) this.drawTownLife(ox, oy, ppt);
     this.drawStructures(ox, oy, ppt, pixel);
     this.drawBoats(ox, oy, ppt);
     this.drawSquads(ox, oy, ppt, now);
@@ -415,167 +594,238 @@ export class Renderer {
     this.pool.pump();
   }
 
-  /** Source and destination rectangles for the visible part of a 1-pixel-per-tile image. */
-  visibleRect(ox, oy, ppt) {
+  /** Source and destination rectangles for a tile range of a 1-pixel-per-tile image. */
+  visibleRect(ox, oy, ppt, view = this.view) {
     const { cw } = this;
-    const x0 = Math.max(0, this.view.x0);
-    const y0 = Math.max(0, this.view.y0);
-    const x1 = Math.min(cw.W, this.view.x1);
-    const y1 = Math.min(cw.H, this.view.y1);
+    const x0 = Math.max(0, view.x0);
+    const y0 = Math.max(0, view.y0);
+    const x1 = Math.min(cw.W, view.x1);
+    const y1 = Math.min(cw.H, view.y1);
     return { x0, y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0), dx: ox + x0 * ppt, dy: oy + y0 * ppt };
   }
 
-  drawFlat(ox, oy, ppt) {
-    const r = this.visibleRect(ox, oy, ppt);
+  drawFlat(g, view, ox, oy, ppt) {
+    const r = this.visibleRect(ox, oy, ppt, view);
     if (!r.w || !r.h) return;
-    this.ctx.imageSmoothingEnabled = false;
-    this.ctx.drawImage(this.overview, r.x0, r.y0, r.w, r.h, r.dx, r.dy, r.w * ppt, r.h * ppt);
+    g.imageSmoothingEnabled = false;
+    g.drawImage(this.overview, r.x0, r.y0, r.w, r.h, r.dx, r.dy, r.w * ppt, r.h * ppt);
   }
 
-  /** Terrain chunks and settlements at the level of detail the zoom needs. */
-  drawPixel(ox, oy, ppt, alpha) {
-    const { ctx, cw } = this;
-    const scale = ppt / TILE;
+  /** Full or half-size pictures from here in (at least 8 device pixels per tile); further out, quarter size. */
+  near(ppt) {
+    return ppt >= 6 || ppt * this.dpr >= 8;
+  }
+
+  /** Ask the paint workers for the pictures the view needs (cheap; nothing is drawn). */
+  requestPictures(ppt) {
+    const { cw } = this;
     const { x0, y0, x1, y1 } = this.view;
-    const cx0 = Math.max(0, Math.floor(x0 / CHUNK));
-    const cy0 = Math.max(0, Math.floor(y0 / CHUNK));
-    const cx1 = Math.min(this.chunksX - 1, Math.floor(x1 / CHUNK));
-    const cy1 = Math.min(this.chunksY - 1, Math.floor(y1 / CHUNK));
+    const near = this.near(ppt);
+    const full = (ppt * this.dpr) / TILE > 0.75;
     const mcx = this.cam.x / CHUNK;
     const mcy = this.cam.y / CHUNK;
-    const near = ppt >= 6; // full or half pictures; below that, quarter size
-    const size = CHUNK * ppt;
-    ctx.imageSmoothingEnabled = scale < 1;
-    ctx.imageSmoothingQuality = 'low';
-    let missing = false;
+    const cy0 = Math.max(0, Math.floor(y0 / CHUNK));
+    const cy1 = Math.min(this.chunksY - 1, Math.floor(y1 / CHUNK));
+    const cx0 = Math.max(0, Math.floor(x0 / CHUNK));
+    const cx1 = Math.min(this.chunksX - 1, Math.floor(x1 / CHUNK));
+    // Room for every chunk on screen, so they never push each other out.
+    this.chunkRoom = Math.max(MAX_CHUNKS, (cx1 - cx0 + 1) * (cy1 - cy0 + 1) + 8);
     for (let cy = cy0; cy <= cy1; cy++) {
       for (let cx = cx0; cx <= cx1; cx++) {
         const d = Math.hypot(cx + 0.5 - mcx, cy + 0.5 - mcy);
-        const dx = ox + cx * size;
-        const dy = oy + cy * size;
-        let pic = null;
-        let at = 0;
-        if (near) {
-          const c = this.chunk(cx, cy, d);
-          if (c) {
-            pic = scale < 0.75 && c.half ? c.half : c.canvas;
-            at = c.at;
-          }
-        }
-        if (!pic) {
-          const l = this.lowChunk(cx, cy, near ? 5 + d : d);
-          if (l) {
-            pic = l.canvas;
-            at = l.at;
-          }
-        }
-        if (!pic) {
-          missing = true;
-          if (alpha >= 1) {
-            ctx.imageSmoothingEnabled = false;
-            ctx.drawImage(this.overview, cx * CHUNK, cy * CHUNK, CHUNK, CHUNK, dx, dy, size, size);
-            ctx.imageSmoothingEnabled = scale < 1;
-          }
-          continue;
-        }
-        // A freshly painted picture fades in instead of popping.
-        const fade = Math.min(1, (this.now - at) / 180);
-        if (fade < 1 && alpha >= 1) {
-          ctx.imageSmoothingEnabled = false;
-          ctx.drawImage(this.overview, cx * CHUNK, cy * CHUNK, CHUNK, CHUNK, dx, dy, size, size);
-          ctx.imageSmoothingEnabled = scale < 1;
-        }
-        ctx.globalAlpha = alpha * fade;
-        ctx.drawImage(pic, dx, dy, size, size);
-        ctx.globalAlpha = 1;
+        if (!(near && this.chunk(cx, cy, d, full))) this.lowChunk(cx, cy, near ? 5 + d : d);
       }
     }
-    this.chunksPending = missing;
-    // Settlements, sorted so southern ones overlap northern ones.
     if (!cw.snap) return;
-    const vis = cw.snap.structures.filter((s) => s.x > x0 - 30 && s.x < x1 + 30 && s.y > y0 - 30 && s.y < y1 + 30).sort((a, b) => a.y - b.y);
-    ctx.globalAlpha = alpha;
-    for (const s of vis) {
-      const ly = near ? this.layer(s) : null;
-      if (ly) {
-        ctx.drawImage(ly.canvas, ox + ly.px * scale, oy + ly.py * scale, ly.canvas.width * scale, ly.canvas.height * scale);
-      } else {
-        const low = this.layersLow.get(s.id);
-        if (!low || low.v !== cw.layouts.get(s.id)?.v || low.color !== cw.colorOf(s.owner)) this.layer(s);
-        if (low) ctx.drawImage(low.canvas, ox + low.px * scale, oy + low.py * scale, low.w * scale, low.h * scale);
-      }
-      // Villagers at work, close enough to see them.
-      if (ppt >= 6) this.drawTownLife(s, ox, oy, ppt);
-    }
-    ctx.globalAlpha = 1;
-  }
-
-  drawTownLife(s, ox, oy, ppt) {
-    const L = this.cw.layouts.get(s.id);
-    if (!L) return;
-    let plan = this.workerPlans.get(s.id);
-    if (!plan || plan.v !== L.v) {
-      plan = { v: L.v, list: planWorkers(this.cw.world, this.cw.ov, L) };
-      this.workerPlans.set(s.id, plan);
-    }
-    this.ctx.imageSmoothingEnabled = false;
-    drawWorkers(this.ctx, plan.list, ox, oy, ppt, this.now);
-  }
-
-  /** Background work for idle workers: quarter-size pictures of the whole map, nearest first. */
-  prefetch() {
-    if (!this.pool.ok || this.pool.wanted.size > 2) return;
-    const mcx = this.cam.x / CHUNK;
-    const mcy = this.cam.y / CHUNK;
     let n = 0;
-    for (let r = 0; r < Math.max(this.chunksX, this.chunksY) && n < 2; r++) {
-      for (let cy = Math.floor(mcy) - r; cy <= Math.floor(mcy) + r && n < 2; cy++) {
-        for (let cx = Math.floor(mcx) - r; cx <= Math.floor(mcx) + r && n < 2; cx++) {
-          if (cx < 0 || cy < 0 || cx >= this.chunksX || cy >= this.chunksY) continue;
-          if (Math.max(Math.abs(cx - Math.floor(mcx)), Math.abs(cy - Math.floor(mcy))) !== r) continue;
-          const key = `${cx},${cy}`;
-          if (this.low.has(key) && !this.cw.lowDirty.has(key)) continue;
-          this.lowChunk(cx, cy, 100 + r);
-          n++;
-        }
+    for (const s of cw.snap.structures) {
+      const L = cw.layouts.get(s.id);
+      if (!L || L.ox > x1 + 2 || L.oy > y1 + 2 || L.ox + LN < x0 - 2 || L.oy + LN < y0 - 2) continue;
+      n++;
+      if (near) this.layer(s, full);
+      else {
+        const low = this.layersLow.get(s.id);
+        if (!low || low.v !== cw.layouts.get(s.id)?.v || low.color !== cw.colorOf(s.owner) || this.cw.layerDirty.has(s.id)) this.lowLayer(s);
       }
     }
+    // Room for every settlement in view, so they never push each other out.
+    if (near) this.layerRoom = Math.max(MAX_LAYERS, n + 8);
   }
 
-  /** Territory: the image (fill and rims) over the flat map, a tint and crisp lines over pixel art. */
-  drawTerritory(ox, oy, ppt, pixel) {
+  // Map cache ----------------------------------------------------------------
+  //
+  // Terrain and settlements change rarely, so they are drawn into a picture a
+  // little larger than the screen and copied each frame. Panning shifts the
+  // picture and draws only the strips that come into view; a picture that
+  // arrives from a worker redraws just its own rectangle; while a zoom is
+  // under way the old picture is stretched, and redrawn once it settles.
+
+  /** Is the view inside the cached picture? */
+  covers(mc) {
+    const v = this.view;
+    return v.x0 >= mc.tx0 && v.y0 >= mc.ty0 && v.x1 <= mc.tx0 + mc.tw && v.y1 <= mc.ty0 + mc.th;
+  }
+
+  drawMap(ox, oy, ppt, pixel) {
     const { ctx } = this;
-    const r = this.visibleRect(ox, oy, ppt);
-    if (!r.w || !r.h) return;
+    const dpr = this.dpr;
+    let mc = this.mc;
+    const same = mc && mc.ppt === ppt && mc.dpr === dpr && mc.pixel === pixel;
+    if (!same) {
+      const zooming = this.anim || this.now - this.zoomAt < 140;
+      if (mc && zooming && mc.dpr === dpr && mc.ppt / ppt > 0.45 && mc.ppt / ppt < 2.2) {
+        // Stretch the last picture over the flat map until the zoom settles.
+        ctx.fillStyle = SEA;
+        ctx.fillRect(0, 0, this.vw, this.vh);
+        this.drawFlat(ctx, this.view, ox, oy, ppt);
+        ctx.imageSmoothingEnabled = ppt < mc.ppt;
+        ctx.drawImage(mc.canvas, ox + mc.tx0 * ppt, oy + mc.ty0 * ppt, mc.tw * ppt, mc.th * ppt);
+        return;
+      }
+      mc = this.compose(ppt, pixel, null);
+    } else if (!this.covers(mc)) mc = this.compose(ppt, pixel, mc);
+    else if (this.mcDirty.length && this.now - (this.refreshAt || 0) > 200) {
+      // New pictures are put in a few times a second, not every frame: a
+      // changed cache picture costs a copy the next time it is drawn.
+      this.refreshAt = this.now;
+      this.refresh(mc);
+    }
     ctx.imageSmoothingEnabled = false;
-    const alpha = pixel <= 0 ? 1 : ppt < LINES ? 1 - pixel * 0.4 : 0.3;
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(this.terr.canvas, r.x0, r.y0, r.w, r.h, r.dx, r.dy, r.w * ppt, r.h * ppt);
-    ctx.globalAlpha = 1;
-    if (ppt >= LINES) this.drawBorders(ox, oy, ppt);
-    if (this.highlight != null) this.drawHighlight(r, ppt);
+    const dx = Math.round((ox + mc.tx0 * ppt) * dpr) / dpr;
+    const dy = Math.round((oy + mc.ty0 * ppt) * dpr) / dpr;
+    ctx.drawImage(mc.canvas, dx, dy, mc.canvas.width / dpr, mc.canvas.height / dpr);
   }
 
   /**
-   * Border lines of the visible tiles, one path per colour, rebuilt when the
-   * territory or the visible tile range changes.
+   * A new cached picture around the view; `old` (same scale) is shifted into
+   * it where it overlaps. Close in there is a second picture over it: the
+   * territory tint and border lines, kept the same way.
    */
-  borderPaths(ppt) {
+  compose(ppt, pixel, old) {
+    const dpr = this.dpr;
+    const margin = Math.round(Math.max(this.vw, this.vh) * 0.2);
+    const tl = this.screenToTile(-margin, -margin);
+    const tx0 = Math.floor(tl.x);
+    const ty0 = Math.floor(tl.y);
+    const tw = Math.ceil((this.vw + 2 * margin) / ppt) + 2;
+    const th = Math.ceil((this.vh + 2 * margin) / ppt) + 2;
+    const pw = Math.ceil(tw * ppt * dpr);
+    const ph = Math.ceil(th * ppt * dpr);
+    const lines = ppt >= LINES;
+    this.mcBufs ||= [{}, {}];
+    this.mcFront = (this.mcFront ?? 0) ^ 1;
+    const buf = this.mcBufs[this.mcFront];
+    const sheet = (name) => {
+      if (!buf[name]) buf[name] = makeCanvas(pw, ph);
+      const cv = buf[name];
+      if (cv.width !== pw || cv.height !== ph) {
+        cv.width = pw;
+        cv.height = ph;
+      }
+      buf[`${name}G`] ||= cv.getContext('2d');
+      return [cv, buf[`${name}G`]];
+    };
+    const [canvas, g] = sheet('base');
+    const [over, og] = lines ? sheet('over') : [null, null];
+    const mc = { canvas, g, over, og, lines, ppt, dpr, pixel, tx0, ty0, tw, th, id: (this.mc?.id || 0) + 1, overAt: this.now };
+    const step = ppt * dpr;
+    const all = { x: tx0, y: ty0, w: tw, h: th };
+    let rects = [all];
+    let overRects = [all];
+    const ix0 = old ? Math.max(old.tx0, tx0) : 0;
+    const iy0 = old ? Math.max(old.ty0, ty0) : 0;
+    const ix1 = old ? Math.min(old.tx0 + old.tw, tx0 + tw) : 0;
+    const iy1 = old ? Math.min(old.ty0 + old.th, ty0 + th) : 0;
+    if (old && old.lines === lines && Math.abs(step - Math.round(step)) < 1e-6 && ix1 > ix0 && iy1 > iy0) {
+      // Keep what is still in view, then draw the strips around it.
+      const shift = (to, from) => {
+        to.setTransform(1, 0, 0, 1, 0, 0);
+        to.globalCompositeOperation = 'copy';
+        to.drawImage(from, (old.tx0 - tx0) * step, (old.ty0 - ty0) * step);
+        to.globalCompositeOperation = 'source-over';
+      };
+      shift(g, old.canvas);
+      if (lines) shift(og, old.over);
+      const strips = [
+        { x: tx0, y: ty0, w: tw, h: iy0 - ty0 },
+        { x: tx0, y: iy1, w: tw, h: ty0 + th - iy1 },
+        { x: tx0, y: iy0, w: ix0 - tx0, h: iy1 - iy0 },
+        { x: ix1, y: iy0, w: tx0 + tw - ix1, h: iy1 - iy0 },
+      ].filter((r) => r.w > 0 && r.h > 0);
+      rects = [...strips, ...this.mcDirty];
+      overRects = strips;
+    } else this.terrCells.clear();
+    this.mc = mc;
+    this.mcDirty = [];
+    for (const r of rects) this.renderRect(mc, r);
+    if (lines) for (const r of overRects) this.renderOver(mc, r);
+    return mc;
+  }
+
+  /** Redraw the parts of the picture whose pictures changed. */
+  refresh(mc) {
+    const rects = this.mcDirty;
+    this.mcDirty = [];
+    for (const r of rects) this.renderRect(mc, r);
+  }
+
+  /** Clip `g` to tile rectangle r of the cache; returns the clipped tile range, or null. */
+  clipTo(mc, g, r) {
+    const x0 = Math.max(r.x, mc.tx0);
+    const y0 = Math.max(r.y, mc.ty0);
+    const x1 = Math.min(r.x + r.w, mc.tx0 + mc.tw);
+    const y1 = Math.min(r.y + r.h, mc.ty0 + mc.th);
+    if (x1 <= x0 || y1 <= y0) return null;
+    const { ppt, dpr } = mc;
+    g.save();
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.beginPath();
+    g.rect((x0 - mc.tx0) * ppt, (y0 - mc.ty0) * ppt, (x1 - x0) * ppt, (y1 - y0) * ppt);
+    g.clip();
+    return { x0, y0, x1, y1 };
+  }
+
+  /** Draw tile rectangle r of the map into the cached picture. */
+  renderRect(mc, r) {
+    const { g, ppt } = mc;
+    const view = this.clipTo(mc, g, r);
+    if (!view) return;
+    const ox = -mc.tx0 * ppt;
+    const oy = -mc.ty0 * ppt;
+    g.fillStyle = SEA;
+    g.fillRect(ox + view.x0 * ppt, oy + view.y0 * ppt, (view.x1 - view.x0) * ppt, (view.y1 - view.y0) * ppt);
+    if (mc.pixel < 1) this.drawFlat(g, view, ox, oy, ppt);
+    this.drawPixel(g, view, ox, oy, ppt, mc.pixel);
+    g.restore();
+  }
+
+  /** Draw tile rectangle r of the territory tint and border lines into the cached picture over the map. */
+  renderOver(mc, r) {
+    const { og: g, ppt } = mc;
+    const view = this.clipTo(mc, g, r);
+    if (!view) return;
     const { cw } = this;
-    const { x0, y0, x1, y1 } = this.view;
-    const key = `${this.terr.v}:${x0}:${y0}:${x1}:${y1}:${Math.round(ppt * 4)}`;
-    if (this.borderCache?.key === key) return this.borderCache.paths;
+    g.clearRect((view.x0 - mc.tx0) * ppt, (view.y0 - mc.ty0) * ppt, (view.x1 - view.x0) * ppt, (view.y1 - view.y0) * ppt);
+    // From here on in tile units.
+    g.setTransform(mc.dpr * ppt, 0, 0, mc.dpr * ppt, -mc.tx0 * ppt * mc.dpr, -mc.ty0 * ppt * mc.dpr);
+    const tr = this.visibleRect(0, 0, 1, view);
+    if (tr.w && tr.h) {
+      g.imageSmoothingEnabled = false;
+      g.globalAlpha = TINT;
+      g.drawImage(this.terr.canvas, tr.x0, tr.y0, tr.w, tr.h, tr.x0, tr.y0, tr.w, tr.h);
+      g.globalAlpha = 1;
+    }
     const O = cw.owner;
     const W = cw.W;
     const t = Math.max(1.5, ppt / 10) / ppt; // line width in tiles
     const paths = new Map();
     const path = (o) => {
-      const c = o === cw.you ? '#fff3c4' : shade(cw.colorOf(o), -0.15);
-      if (!paths.has(c)) paths.set(c, new Path2D());
-      return paths.get(c);
+      let p = paths.get(o);
+      if (!p) paths.set(o, (p = new Path2D()));
+      return p;
     };
-    for (let y = Math.max(0, y0); y < Math.min(cw.H - 1, y1); y++) {
-      for (let x = Math.max(0, x0); x < Math.min(W - 1, x1); x++) {
+    for (let y = Math.max(0, view.y0 - 1); y < Math.min(cw.H - 1, view.y1); y++) {
+      for (let x = Math.max(0, view.x0 - 1); x < Math.min(W - 1, view.x1); x++) {
         const i = y * W + x;
         const k = O[i];
         const kr = O[i + 1];
@@ -590,49 +840,193 @@ export class Renderer {
         }
       }
     }
-    this.borderCache = { key, paths };
-    return paths;
+    for (const [o, p] of paths) {
+      g.fillStyle = o === cw.you ? '#fff3c4' : shade(cw.colorOf(o), -0.15);
+      g.fill(p);
+    }
+    g.restore();
   }
 
+  /** Something in tile rectangle r looks different now. */
+  touch(x, y, w, h) {
+    const mc = this.mc;
+    if (!mc || x > mc.tx0 + mc.tw || y > mc.ty0 + mc.th || x + w < mc.tx0 || y + h < mc.ty0) return;
+    this.mcDirty.push({ x, y, w, h });
+  }
+
+  /** Note which parts of the territory changed (for the cached tint and lines). */
+  noteTerritory() {
+    const t = this.terr;
+    if (t.changedAll) this.terrCells.add(-1);
+    else {
+      const W = this.cw.W;
+      const cols = Math.ceil(W / CELL);
+      for (const i of t.changed) this.terrCells.add(Math.floor(((i / W) | 0) / CELL) * cols + Math.floor((i % W) / CELL));
+    }
+    t.changed = [];
+    t.changedAll = false;
+  }
+
+  /** Terrain chunks and settlements at the level of detail the zoom needs, for tile range `view`. */
+  drawPixel(g, view, ox, oy, ppt, alpha) {
+    const { cw } = this;
+    const scale = ppt / TILE;
+    const { x0, y0, x1, y1 } = view;
+    const cx0 = Math.max(0, Math.floor(x0 / CHUNK));
+    const cy0 = Math.max(0, Math.floor(y0 / CHUNK));
+    const cx1 = Math.min(this.chunksX - 1, Math.floor((x1 - 1) / CHUNK));
+    const cy1 = Math.min(this.chunksY - 1, Math.floor((y1 - 1) / CHUNK));
+    const near = this.near(ppt);
+    const size = CHUNK * ppt;
+    const dscale = scale * this.dpr; // device pixels per art pixel
+    g.imageSmoothingQuality = 'low';
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const dx = ox + cx * size;
+        const dy = oy + cy * size;
+        let pic = null;
+        let res = 1; // art pixels per picture pixel
+        if (near) {
+          // Only what is already painted: requests come from the visible part (requestPictures).
+          const c = this.chunks.get(`${cx},${cy}`);
+          if (c) {
+            c.used = this.frameNo;
+            const half = c.half && (dscale <= 0.75 || !c.canvas);
+            pic = half ? c.half : c.canvas;
+            res = half ? 2 : 1;
+          }
+        }
+        if (!pic) {
+          const l = this.low.get(`${cx},${cy}`);
+          if (l) {
+            pic = l.canvas;
+            res = 4;
+          }
+        }
+        if (!pic) {
+          if (alpha >= 1) {
+            g.imageSmoothingEnabled = false;
+            g.drawImage(this.overview, cx * CHUNK, cy * CHUNK, CHUNK, CHUNK, dx, dy, size, size);
+          }
+          continue;
+        }
+        // Smooth only when the picture is shrunk on screen; enlarged pixel art stays crisp.
+        g.imageSmoothingEnabled = dscale * res < 1;
+        g.globalAlpha = alpha;
+        g.drawImage(pic, dx, dy, size, size);
+        g.globalAlpha = 1;
+      }
+    }
+    // Settlements, sorted so southern ones overlap northern ones.
+    if (!cw.snap) return;
+    const vis = cw.snap.structures.filter((s) => s.x > x0 - 30 && s.x < x1 + 30 && s.y > y0 - 30 && s.y < y1 + 30).sort((a, b) => a.y - b.y);
+    g.globalAlpha = alpha;
+    for (const s of vis) {
+      const ly = near ? this.layers.get(s.id) : null;
+      if (ly) {
+        ly.used = this.frameNo;
+        const half = ly.half && (dscale <= 0.75 || !ly.canvas);
+        g.imageSmoothingEnabled = dscale * (half ? 2 : 1) < 1;
+        g.drawImage(half ? ly.half : ly.canvas, ox + ly.px * scale, oy + ly.py * scale, ly.w * scale, ly.h * scale);
+      } else {
+        const low = this.layersLow.get(s.id);
+        if (low) {
+          g.imageSmoothingEnabled = dscale * 4 < 1;
+          g.drawImage(low.canvas, ox + low.px * scale, oy + low.py * scale, low.w * scale, low.h * scale);
+        }
+      }
+    }
+    g.globalAlpha = 1;
+  }
+
+  /** Villagers at work in the towns on screen. */
+  drawTownLife(ox, oy, ppt) {
+    const { cw } = this;
+    if (!cw.snap) return;
+    const { x0, y0, x1, y1 } = this.view;
+    this.ctx.imageSmoothingEnabled = false;
+    for (const s of cw.snap.structures) {
+      if (s.x < x0 - 12 || s.x > x1 + 12 || s.y < y0 - 12 || s.y > y1 + 12) continue;
+      const L = cw.layouts.get(s.id);
+      if (!L) continue;
+      let plan = this.workerPlans.get(s.id);
+      if (!plan || plan.v !== L.v) {
+        plan = { v: L.v, list: planWorkers(cw.world, cw.ov, L) };
+        this.workerPlans.set(s.id, plan);
+      }
+      drawWorkers(this.ctx, this.atlas, plan.list, ox, oy, ppt, this.now);
+    }
+  }
+
+  /** Background work for idle workers: quarter-size pictures of the whole map, nearest first. */
+  prefetch() {
+    // One at a time, and not while the player is moving the map: phones have few cores to spare.
+    if (!this.pool.ok || this.pool.wanted.size || this.pool.flight.size > 1) return;
+    if (this.now - (this.moveAt || 0) < 400 || this.now - (this.zoomAt || 0) < 400) return;
+    const mcx = this.cam.x / CHUNK;
+    const mcy = this.cam.y / CHUNK;
+    for (let r = 0; r < Math.max(this.chunksX, this.chunksY); r++) {
+      for (let cy = Math.floor(mcy) - r; cy <= Math.floor(mcy) + r; cy++) {
+        for (let cx = Math.floor(mcx) - r; cx <= Math.floor(mcx) + r; cx++) {
+          if (cx < 0 || cy < 0 || cx >= this.chunksX || cy >= this.chunksY) continue;
+          if (Math.max(Math.abs(cx - Math.floor(mcx)), Math.abs(cy - Math.floor(mcy))) !== r) continue;
+          const key = `${cx},${cy}`;
+          if (this.low.has(key) && !this.cw.lowDirty.has(key)) continue;
+          this.lowChunk(cx, cy, 100 + r);
+          return;
+        }
+      }
+    }
+  }
+
+  /** Territory: the image (fill and rims) over the flat map, a tint and crisp lines over pixel art. */
+  drawTerritory(ox, oy, ppt, pixel) {
+    const { ctx } = this;
+    const r = this.visibleRect(ox, oy, ppt);
+    if (!r.w || !r.h) return;
+    ctx.imageSmoothingEnabled = false;
+    // Close in, the tint and the border lines come as one cached picture.
+    if (!(ppt >= LINES && this.drawBorders(ox, oy, ppt))) {
+      ctx.globalAlpha = pixel <= 0 ? 1 : ppt < LINES ? 1 - pixel * 0.4 : TINT;
+      ctx.drawImage(this.terr.canvas, r.x0, r.y0, r.w, r.h, r.dx, r.dy, r.w * ppt, r.h * ppt);
+      ctx.globalAlpha = 1;
+    }
+    if (this.highlight != null) this.drawHighlight(r, ppt);
+  }
+
+  /**
+   * Close in: the territory tint and border lines from the cached picture
+   * over the map, with the parts where land changed hands redrawn (at most
+   * a few times a second). Returns false when there is no such picture.
+   */
   drawBorders(ox, oy, ppt) {
     const { ctx } = this;
-    const paths = this.borderPaths(ppt);
-    const dpr = this.dpr;
-    ctx.save();
-    ctx.setTransform(dpr * ppt, 0, 0, dpr * ppt, dpr * ox, dpr * oy);
-    for (const [color, path] of paths) {
-      ctx.fillStyle = color;
-      ctx.fill(path);
+    const mc = this.mc;
+    if (!mc || !mc.lines) return false;
+    if (mc.ppt !== ppt) {
+      // Zooming: stretch it with the map.
+      ctx.drawImage(mc.over, ox + mc.tx0 * ppt, oy + mc.ty0 * ppt, mc.tw * ppt, mc.th * ppt);
+      return true;
     }
-    ctx.restore();
+    if (this.terrCells.size && this.now - mc.overAt > 150) {
+      mc.overAt = this.now;
+      if (this.terrCells.has(-1)) this.renderOver(mc, { x: mc.tx0, y: mc.ty0, w: mc.tw, h: mc.th });
+      else {
+        const cols = Math.ceil(this.cw.W / CELL);
+        for (const c of this.terrCells) this.renderOver(mc, { x: (c % cols) * CELL - 1, y: Math.floor(c / cols) * CELL - 1, w: CELL + 2, h: CELL + 2 });
+      }
+      this.terrCells.clear();
+    }
+    const dpr = this.dpr;
+    ctx.drawImage(mc.over, Math.round((ox + mc.tx0 * ppt) * dpr) / dpr, Math.round((oy + mc.ty0 * ppt) * dpr) / dpr, mc.over.width / dpr, mc.over.height / dpr);
+    return true;
   }
 
-  /** The chosen target realm, rimmed in pulsing light (an image rebuilt twice a second at most). */
+  /** The chosen target realm, rimmed in pulsing light. */
   drawHighlight(r, ppt) {
-    const { cw } = this;
-    const pid = this.highlight;
-    const h = this.hl;
-    if (!h || h.pid !== pid || (h.v !== this.terr.v && this.now - h.at > 500)) {
-      const cv = h?.canvas || makeCanvas(cw.W, cw.H);
-      const g = cv.getContext('2d');
-      const img = g.createImageData(cw.W, cw.H);
-      const d = img.data;
-      const O = cw.owner;
-      const W = cw.W;
-      for (let i = W; i < O.length - W; i++) {
-        if (O[i] !== pid) continue;
-        if (O[i - 1] === pid && O[i + 1] === pid && O[i - W] === pid && O[i + W] === pid) continue;
-        d[i * 4] = 255;
-        d[i * 4 + 1] = 243;
-        d[i * 4 + 2] = 196;
-        d[i * 4 + 3] = 255;
-      }
-      g.putImageData(img, 0, 0);
-      this.hl = { pid, v: this.terr.v, at: this.now, canvas: cv };
-    }
     const { ctx } = this;
     ctx.globalAlpha = 0.55 + 0.35 * Math.sin(this.now / 160);
-    ctx.drawImage(this.hl.canvas, r.x0, r.y0, r.w, r.h, r.dx, r.dy, r.w * ppt, r.h * ppt);
+    ctx.drawImage(this.terr.hlCanvas, r.x0, r.y0, r.w, r.h, r.dx, r.dy, r.w * ppt, r.h * ppt);
     ctx.globalAlpha = 1;
   }
 
@@ -675,7 +1069,7 @@ export class Renderer {
   }
 
   drawBoats(ox, oy, ppt) {
-    const { ctx, cw } = this;
+    const { ctx, cw, atlas } = this;
     if (!cw.snap) return;
     ctx.imageSmoothingEnabled = false;
     const scale = Math.max(1, Math.min(3, ppt / 5));
@@ -684,95 +1078,151 @@ export class Renderer {
       const sx = ox + (pos.x + 0.5) * ppt;
       const sy = oy + (pos.y + 0.5) * ppt;
       if (sx < -40 || sy < -40 || sx > this.vw + 40 || sy > this.vh + 40) continue;
-      const spr = shipSprite(b.kind, cw.colorOf(b.owner));
-      const w = spr.w * scale;
-      const h = spr.h * scale;
-      ctx.save();
-      ctx.translate(Math.round(sx), Math.round(sy));
-      if (b.dir < 0) ctx.scale(-1, 1);
-      ctx.drawImage(spr.canvas, -w / 2, -h + 3 * scale, w, h);
-      ctx.restore();
+      const color = cw.colorOf(b.owner);
+      const e = atlas.get(`s:${b.kind}:${color}`, () => {
+        const spr = shipSprite(b.kind, color);
+        return { canvas: spr.canvas, w: spr.w, h: spr.h, ax: spr.w / 2, ay: spr.h - 3 };
+      });
+      atlas.draw(ctx, e, sx, sy, scale, b.dir < 0);
     }
   }
 
-  /** Squads: a chip on the flat map, a small formation of figures closer in. */
+  /** A cached count badge, drawn with its top-left corner at (x, y). */
+  badge(n, x, y, color, fighting) {
+    const fight = fighting ? (Math.floor(this.now / 200) % 2 ? 1 : 2) : 0;
+    const text = fmt(n);
+    const dpr = this.dpr;
+    const e = this.atlas.get(`b:${text}:${color}:${fight}`, () => badgeSprite(text, color, fight, dpr));
+    this.atlas.draw(this.ctx, e, x, y, 1 / dpr);
+  }
+
+  /**
+   * Far out, squads of one realm close together share one chip with their
+   * total. The groups are worked out once per snapshot (in map cells, so
+   * they hold still while the map pans); each frame only moves them.
+   */
+  drawSquadChips(ox, oy, ppt, t, ring) {
+    const { ctx, cw, atlas } = this;
+    const snap = cw.snap;
+    let sel = this.selected.size;
+    for (const id of this.selected) sel += id * 7;
+    const key = `${snap.tick}:${ppt}:${sel}`;
+    let gs = this.chipGroups;
+    if (!gs || gs.key !== key) {
+      const cell = 22 / ppt; // tiles
+      const prevMap = cw.prevSquads;
+      const byCell = new Map();
+      const list = [];
+      for (const q of snap.squads) {
+        const p = prevMap?.get(q.id) || q;
+        const selected = this.selected.has(q.id);
+        const k = selected ? -q.id : (q.owner + 1) * 1e8 + Math.floor(q.y / cell) * 1e4 + Math.floor(q.x / cell);
+        let g = byCell.get(k);
+        if (!g) {
+          byCell.set(k, (g = { owner: q.owner, color: cw.colorOf(q.owner), n: 0, type: q.type, big: 0, fight: false, sel: selected, m: [] }));
+          list.push(g);
+        }
+        g.n += q.n;
+        g.m.push(p.x, p.y, q.x, q.y);
+        if (q.n > g.big) {
+          g.big = q.n;
+          g.type = q.type;
+        }
+        if (q.state === 'fight') g.fight = true;
+      }
+      list.sort((a, b) => a.m[3] - b.m[3]);
+      gs = this.chipGroups = { key, list };
+    }
+    const k = ppt < 2 ? 1 : 1.25;
+    for (const g of gs.list) {
+      const m = g.m;
+      let x = 0;
+      let y = 0;
+      for (let j = 0; j < m.length; j += 4) {
+        x += m[j] + (m[j + 2] - m[j]) * t;
+        y += m[j + 1] + (m[j + 3] - m[j + 1]) * t;
+      }
+      const c = m.length / 4;
+      const sx = ox + (x / c + 0.5) * ppt;
+      const sy = oy + (y / c + 0.5) * ppt;
+      if (sx < -40 || sy < -40 || sx > this.vw + 40 || sy > this.vh + 40) continue;
+      if (g.sel) ring(sx, sy);
+      g.chip ||= atlas.get(`c:${g.type}:${g.color}`, () => chip(g.type, g.color));
+      const e = g.chip;
+      atlas.draw(ctx, e, sx, sy + (e.h * k) / 2, k);
+      this.badge(g.n, sx + (e.w * k) / 2 - 2, sy - (e.h * k) / 2 - 4, g.color, g.fight);
+    }
+  }
+
+  /**
+   * Squads: chips far out (squads close together on screen share one, with
+   * their total), a small formation of figures closer in. Only squads on
+   * screen are touched, and every picture comes from the atlas.
+   */
   drawSquads(ox, oy, ppt, now) {
-    const { ctx, cw } = this;
-    if (!cw.snap) return;
+    const { ctx, cw, atlas } = this;
+    const snap = cw.snap;
+    if (!snap) return;
     ctx.imageSmoothingEnabled = false;
-    const list = [...cw.snap.squads].sort((a, b) => a.y - b.y);
-    const figures = ppt >= 5;
+    const t = Math.min(1, (now - cw.snapAt) / cw.snapGap);
+    const ring = (sx, sy) => {
+      ctx.strokeStyle = '#fff3c4';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(sx, sy + 2, Math.max(9, ppt * 0.9), Math.max(5, ppt * 0.45), 0, 0, Math.PI * 2);
+      ctx.stroke();
+    };
+    if (ppt < 5) {
+      this.drawSquadChips(ox, oy, ppt, t, ring);
+      return;
+    }
+    const prevMap = cw.prevSquads;
+    const vis = [];
+    for (const q of snap.squads) {
+      const p = prevMap?.get(q.id);
+      const x = p ? p.x + (q.x - p.x) * t : q.x;
+      const y = p ? p.y + (q.y - p.y) * t : q.y;
+      const sx = ox + (x + 0.5) * ppt;
+      const sy = oy + (y + 0.5) * ppt;
+      if (sx < -60 || sy < -60 || sx > this.vw + 60 || sy > this.vh + 60) continue;
+      vis.push({ q, p, sx, sy });
+    }
+    vis.sort((a, b) => a.sy - b.sy);
     // Figures are never drawn smaller than this, so armies stay readable from afar.
     const scale = Math.max(0.8, ppt / TILE);
-    for (const q of list) {
-      const pos = cw.squadPos(q, now);
-      const sx = ox + (pos.x + 0.5) * ppt;
-      const sy = oy + (pos.y + 0.5) * ppt;
-      if (sx < -60 || sy < -60 || sx > this.vw + 60 || sy > this.vh + 60) continue;
+    const step = ppt * Math.max(1, 8 / ppt) * 0.9;
+    const tt = now / 1000;
+    const dpr = this.dpr;
+    // Below 8 px per tile figures have a fixed size: whole squads come as one picture.
+    const whole = ppt < 8;
+    const phases = { f: Math.floor(tt * 3) % 2, m: Math.floor(tt * 8) % 4, i: Math.floor(tt * 1.2) % 4 };
+    for (const v of vis) {
+      const { q, p, sx, sy } = v;
       const color = cw.colorOf(q.owner);
-      const sel = this.selected.has(q.id);
+      if (this.selected.has(q.id)) ring(sx, sy);
       // Facing follows movement; fighting squads face their last way.
-      const prev = cw.prevSquads?.get(q.id);
       let face = this.facing.get(q.id) ?? 1;
-      if (prev && Math.abs(q.x - prev.x) > 0.02) face = q.x < prev.x ? -1 : 1;
+      if (p && Math.abs(q.x - p.x) > 0.02) face = q.x < p.x ? -1 : 1;
       this.facing.set(q.id, face);
-      if (sel) {
-        ctx.strokeStyle = '#fff3c4';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.ellipse(sx, sy + 2, Math.max(9, ppt * 0.9), Math.max(5, ppt * 0.45), 0, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      if (!figures) {
-        const c = chip(q.type, color);
-        const k = ppt < 2 ? 1 : 1.25;
-        ctx.drawImage(c.canvas, Math.round(sx - (c.w * k) / 2), Math.round(sy - (c.h * k) / 2), c.w * k, c.h * k);
-        this.badge(q, sx + (c.w * k) / 2 - 2, sy - (c.h * k) / 2 - 4, color);
-        continue;
-      }
       const nf = Math.max(1, Math.min(q.type === 'trebuchet' ? 3 : 9, Math.ceil(Math.sqrt(q.n))));
-      const spread = q.type === 'rider' || q.type === 'knight' ? 1.3 : q.type === 'trebuchet' ? 1.8 : 1;
-      const t = now / 1000;
       const fighting = q.state === 'fight';
-      const moving = q.state === 'moving' || (prev && Math.hypot(q.x - prev.x, q.y - prev.y) > 0.02);
-      const order = FORMATION.slice(0, nf).map((f, k) => [f[0] * face, f[1], k]).sort((a, b) => a[1] - b[1]);
-      for (const [fx, fy, k] of order) {
-        const frame = fighting ? 4 + (Math.floor(t * 3 + k * 0.7) % 2) : moving ? Math.floor(t * 8 + k * 1.3) % 4 : (Math.floor(t * 1.2 + k) % 4 === 0 ? 1 : 0);
-        const spr = unitSprite(q.type, color, frame);
-        const px = sx + fx * spread * ppt * Math.max(1, 8 / ppt) * 0.9;
-        const py = sy + fy * spread * ppt * Math.max(1, 8 / ppt) * 0.9;
-        const dw = spr.w * scale;
-        const dh = spr.h * scale;
-        if (face < 0) {
-          ctx.save();
-          ctx.translate(Math.round(px), Math.round(py));
-          ctx.scale(-1, 1);
-          ctx.drawImage(spr.canvas, -spr.ax * scale, -spr.ay * scale, dw, dh);
-          ctx.restore();
-        } else ctx.drawImage(spr.canvas, Math.round(px - spr.ax * scale), Math.round(py - spr.ay * scale), dw, dh);
+      const moving = q.state === 'moving' || (p && Math.hypot(q.x - p.x, q.y - p.y) > 0.02);
+      const state = fighting ? 'f' : moving ? 'm' : 'i';
+      if (whole) {
+        const phase = phases[state];
+        const e = atlas.get(`F:${q.type}:${color}:${nf}:${state}:${phase}:${dpr}`, () => formationSprite(q.type, color, nf, state, phase, scale, step, dpr));
+        atlas.draw(ctx, e, sx, sy, 1 / dpr, face < 0);
+      } else {
+        const spread = (SPREAD[q.type] || 1) * step;
+        // Back row first, so nearer figures overlap the ones behind.
+        for (const k of ROWS[nf]) {
+          const f = FORMATION[k];
+          const frame = figureFrame(state, phases[state], k);
+          const e = atlas.get(`u:${q.type}:${color}:${frame}`, () => unitSprite(q.type, color, frame));
+          atlas.draw(ctx, e, sx + f[0] * face * spread, sy + f[1] * spread, scale, face < 0);
+        }
       }
-      this.badge(q, sx + 8 * scale, sy - 20 * scale, color);
-    }
-  }
-
-  /** The soldier count over a squad. */
-  badge(q, x, y, color) {
-    const { ctx } = this;
-    const text = fmt(q.n);
-    ctx.font = '600 10px "Pixelify Sans", monospace';
-    const tw = Math.ceil(ctx.measureText(text).width) + 6;
-    ctx.fillStyle = '#231a16';
-    ctx.fillRect(Math.round(x - 1), Math.round(y - 1), tw + 2, 13);
-    ctx.fillStyle = color;
-    ctx.fillRect(Math.round(x), Math.round(y), tw, 11);
-    const [r, g, b] = rgb(color);
-    ctx.fillStyle = r * 0.3 + g * 0.55 + b * 0.15 > 150 ? '#231a16' : '#ffffff';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillText(text, Math.round(x + 3), Math.round(y));
-    if (q.state === 'fight') {
-      ctx.fillStyle = Math.floor(this.now / 200) % 2 ? '#ffe08a' : '#ff6a3a';
-      ctx.fillRect(Math.round(x + tw + 3), Math.round(y + 3), 4, 4);
+      this.badge(q.n, sx + 8 * scale, sy - 20 * scale, color, fighting);
     }
   }
 
@@ -829,7 +1279,10 @@ export class Renderer {
 
   /** A realm's name and army, rendered once per text and size. */
   label(p, size) {
-    const army = `⚔ ${fmt(p.army)}`;
+    // The army figure changes all the time; the picture is redone at most once a second.
+    let shown = this.labelArmy.get(p.id);
+    if (!shown || (shown.v !== p.army && this.now - shown.at > 1000)) this.labelArmy.set(p.id, (shown = { v: p.army, at: this.now }));
+    const army = `⚔ ${fmt(shown.v)}`;
     const key = `${p.id}:${p.name}:${army}:${size}:${p.traitor ? 1 : 0}`;
     let c = this.labelCache.get(key);
     if (c) return c;
@@ -896,9 +1349,8 @@ export class Renderer {
     ctx.globalAlpha = 1;
     // Town names when close in.
     if (ppt < 16) return;
-    ctx.font = '12px "Pixelify Sans", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    ctx.imageSmoothingEnabled = false;
+    const dpr = this.dpr;
     for (const s of snap.structures) {
       const ly = this.layers.get(s.id);
       const sx = ox + (s.x + 0.5) * ppt;
@@ -906,13 +1358,9 @@ export class Renderer {
       if (sx < -100 || sx > this.vw + 100 || sy < -30 || sy > this.vh + 30) continue;
       const kind = s.kind === 'town' ? ['', 'Hamlet', 'Village', 'Town', 'City'][s.level] : s.kind === 'port' ? 'Port' : 'Outpost';
       const text = `${s.name} · ${kind}`;
-      const w = ctx.measureText(text).width + 12;
-      ctx.fillStyle = 'rgba(35,26,22,0.8)';
-      ctx.fillRect(Math.round(sx - w / 2), Math.round(sy - 9), Math.round(w), 18);
-      ctx.fillStyle = cw.colorOf(s.owner);
-      ctx.fillRect(Math.round(sx - w / 2), Math.round(sy - 9), 3, 18);
-      ctx.fillStyle = '#f6efdc';
-      ctx.fillText(text, sx + 1, sy + 1);
+      const color = cw.colorOf(s.owner);
+      const e = this.atlas.get(`t:${text}:${color}`, () => nameTag(text, color, dpr));
+      this.atlas.draw(ctx, e, sx, sy, 1 / dpr);
     }
   }
 

@@ -53,10 +53,10 @@ function readSave() {
   }
 }
 
-/** Store a save in the browser; returns false when storage is full or blocked. */
-function writeSave(data, info) {
+/** Store a save (as JSON text) in the browser; returns false when storage is full or blocked. */
+function writeSave(text, info) {
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    localStorage.setItem(SAVE_KEY, text);
     localStorage.setItem(SAVE_INFO_KEY, JSON.stringify({ ...info, at: Date.now() }));
     return true;
   } catch {
@@ -72,8 +72,8 @@ function describeInfo(i) {
 async function saveSession(quiet = false) {
   if (!session?.single || !session.cw) return false;
   try {
-    const { data, info } = await session.transport.save();
-    const ok = writeSave(data, info);
+    const { text, info } = await session.transport.save();
+    const ok = writeSave(text, info);
     if (!quiet) session.ui?.toast(ok ? 'Realm saved in this browser.' : 'The browser refused to store the save; download it instead.', ok ? 'info' : 'error');
     return ok;
   } catch (e) {
@@ -84,8 +84,8 @@ async function saveSession(quiet = false) {
 
 async function downloadSave() {
   if (!session?.single) return;
-  const { data, info } = await session.transport.save();
-  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const { text, info } = await session.transport.save();
+  const blob = new Blob([text], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `realmwright-${String(info.name).replace(/[^\w-]+/g, '_')}-${info.minutes}min.json`;

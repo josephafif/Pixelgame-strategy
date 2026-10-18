@@ -133,8 +133,8 @@ export function planWorkers(world, ov, L) {
   return out;
 }
 
-/** Draw a town's workers. `scale` is screen pixels per art pixel. */
-export function drawWorkers(ctx, plans, ox, oy, ppt, now) {
+/** Draw a town's workers (pictures from the renderer's atlas). */
+export function drawWorkers(ctx, atlas, plans, ox, oy, ppt, now) {
   const scale = ppt / TILE;
   const t = now / 1000;
   for (const w of plans) {
@@ -157,17 +157,7 @@ export function drawWorkers(ctx, plans, ox, oy, ppt, now) {
       flip = fwd ? bx < ax : bx > ax;
       frame = Math.floor(t * 6 + w.phase) % 4;
     }
-    const spr = workerSprite(w.job, frame, w.variant);
-    const sx = ox + x * ppt;
-    const sy = oy + y * ppt;
-    const dw = spr.w * scale;
-    const dh = spr.h * scale;
-    if (flip) {
-      ctx.save();
-      ctx.translate(sx, sy);
-      ctx.scale(-1, 1);
-      ctx.drawImage(spr.canvas, -spr.ax * scale, -spr.ay * scale, dw, dh);
-      ctx.restore();
-    } else ctx.drawImage(spr.canvas, sx - spr.ax * scale, sy - spr.ay * scale, dw, dh);
+    const e = atlas.get(`w:${w.job}:${frame}:${w.variant}`, () => workerSprite(w.job, frame, w.variant));
+    atlas.draw(ctx, e, ox + x * ppt, oy + y * ppt, scale, flip);
   }
 }
