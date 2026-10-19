@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1418">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Annals">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/favicon-32.png" type="image/png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<title>Annals</title>
+<meta name="description" content="Annals: a simulator of civilizations. Watch peoples farm, build towns that grow into cities, trade, worship and go to war over six thousand years, or take the reins of any realm.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<canvas id="map" aria-label="Map of the world"></canvas>
+
+<div id="ui" hidden>
+  <header id="top">
+    <div id="realm-chip" class="glass" hidden></div>
+    <div id="clock" class="glass">
+      <div id="date"><b id="year">4000 BCE</b><span id="era-name"></span></div>
+      <div id="speeds" role="group" aria-label="Speed">
+        <button data-speed="0" title="Pause (Space)">❚❚</button>
+        <button data-speed="1" title="One year a second">▶</button>
+        <button data-speed="5" title="Five years a second">▶▶</button>
+        <button data-speed="25" title="Twenty-five years a second">▶▶▶</button>
+        <button data-speed="max" title="As fast as possible">⏭</button>
+      </div>
+    </div>
+    <div id="top-right">
+      <button id="btn-realms" class="glass icon" title="Realms (R)">♛</button>
+      <button id="btn-chronicle" class="glass icon" title="Chronicle (C)">📜</button>
+      <button id="btn-menu" class="glass icon" title="Menu (Esc)">☰</button>
+    </div>
+  </header>
+
+  <aside id="realms" class="drawer left glass" hidden>
+    <div class="drawer-head"><h2>Realms</h2><span id="world-pop" class="muted"></span><button class="x" data-close="realms">✕</button></div>
+    <div id="realm-list"></div>
+  </aside>
+
+  <aside id="chronicle" class="drawer right glass" hidden>
+    <div class="drawer-head">
+      <h2>Chronicle</h2>
+      <label class="follow" title="The camera follows great events"><input type="checkbox" id="follow"> Follow</label>
+      <button class="x" data-close="chronicle">✕</button>
+    </div>
+    <div id="chron-tabs" class="tabs"><button data-f="major" class="on">Great events</button><button data-f="all">Everything</button><button data-f="mine">My realm</button></div>
+    <div id="events"></div>
+  </aside>
+
+  <section id="panel" class="sheet glass" hidden></section>
+  <div id="hint" class="glass" hidden></div>
+  <div id="ticker" aria-live="polite"></div>
+
+  <nav id="tools" class="glass">
+    <button data-tool="look" class="on"><span>🔍</span><i>Look</i></button>
+    <button data-tool="lead"><span>👑</span><i>Lead</i></button>
+    <button data-tool="fate"><span>⚡</span><i>Fate</i></button>
+    <button data-tool="map"><span>🗺</span><i>Map</i></button>
+    <button data-tool="history"><span>📈</span><i>History</i></button>
+  </nav>
+</div>
+
+<div id="screen">
+  <div class="title-card">
+    <h1>Annals</h1>
+    <p class="sub">Six thousand years of peoples, towns and empires, on a world made for them.</p>
+    <div id="start-form">
+      <label>World <select id="f-size"><option value="small">Small</option><option value="medium" selected>Medium</option><option value="large">Large</option><option value="huge">Huge</option></select></label>
+      <label>Peoples <input id="f-peoples" type="range" min="4" max="30" value="14"><b id="f-peoples-v">14</b></label>
+      <label>Seed <input id="f-seed" type="text" inputmode="numeric" maxlength="9"><button id="f-dice" class="btn small" title="Another world">🎲</button></label>
+      <label>Land <select id="f-land"><option value="0.32">Islands</option><option value="0.42" selected>Continents</option><option value="0.55">Great landmasses</option></select></label>
+    </div>
+    <div class="actions">
+      <button id="btn-begin" class="btn primary big">Begin history</button>
+      <button id="btn-continue" class="btn big" hidden>Continue</button>
+    </div>
+    <div class="actions small">
+      <button id="btn-loadfile" class="btn small">Load a saved world…</button>
+      <button id="btn-install" class="btn small" hidden>Install as an app</button>
+      <a class="btn small" href="../client/">Realmwright (the strategy game)</a>
+    </div>
+    <p id="start-msg" class="muted small"></p>
+  </div>
+</div>
+<div id="loading" hidden><div class="glass">Shaping the world…</div></div>
+<div id="modal-back" hidden><div id="modal" class="glass"></div></div>
+<div id="toasts" aria-live="polite"></div>
+<input id="file" type="file" accept=".json,application/json" hidden>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>

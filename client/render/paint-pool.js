@@ -7,7 +7,7 @@
 const IN_FLIGHT = 2; // jobs queued per worker, so a worker never idles between messages
 
 export class PaintPool {
-  constructor(world, onResult) {
+  constructor(world, onResult, { url = new URL('./paint-worker.js', import.meta.url), workers = 0 } = {}) {
     this.onResult = onResult;
     this.wanted = new Map(); // key -> { prio, make }
     this.flight = new Map(); // key -> worker
@@ -16,10 +16,10 @@ export class PaintPool {
     if (!this.ok) return;
     // Phones keep cores free for the page and the simulation.
     const touch = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
-    const n = Math.max(1, Math.min(touch ? 2 : 3, (navigator.hardwareConcurrency || 2) - 1));
+    const n = workers || Math.max(1, Math.min(touch ? 2 : 3, (navigator.hardwareConcurrency || 2) - 1));
     try {
       for (let i = 0; i < n; i++) {
-        const w = new Worker(new URL('./paint-worker.js', import.meta.url), { type: 'module' });
+        const w = new Worker(url, { type: 'module' });
         w.jobs = 0;
         w.addEventListener('message', (e) => this.finish(w, e.data));
         w.addEventListener('error', (e) => {

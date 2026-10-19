@@ -115,8 +115,9 @@ const SHADOW_ALPHA = 0.36;
 /**
  * Render chunk (cx, cy) to a canvas of CHUNK*TILE pixels.
  * ov: { road: Uint8Array, ground: Uint8Array, crop: Uint8Array, cleared: Uint8Array }
+ * opts.noObjects: leave out trees and rocks.
  */
-export function renderChunk(world, cx, cy, ov) {
+export function renderChunk(world, cx, cy, ov, opts = {}) {
   const { width: W, height: H, biome, height01, feature } = world;
   const S = CHUNK * TILE;
   const M = 3; // pixel margin for neighbourhood tests
@@ -580,6 +581,8 @@ export function renderChunk(world, cx, cy, ov) {
     }
   }
   ctx.putImageData(img, 0, 0);
+  // Callers that draw trees themselves (interleaved with their own sprites).
+  if (opts.noObjects) return canvas;
 
   // Natural objects. Include a margin of tiles whose sprites (up to ~2
   // tiles wide, ~3 tall) or shadows overhang into this chunk.

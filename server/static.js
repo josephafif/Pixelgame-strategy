@@ -18,7 +18,7 @@ const TYPES = {
 };
 
 // Only these top-level folders are served; server code and tests are not.
-const PUBLIC = ['client', 'engine'];
+const PUBLIC = ['client', 'engine', 'civ'];
 
 export function makeStaticHandler(root) {
   const base = resolve(root);
